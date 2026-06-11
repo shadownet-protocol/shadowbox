@@ -1,0 +1,34 @@
+[project]
+name = "shadowbox"
+version = "0.1.0"
+description = "All-in-one Shadownet lab: N Shadows sparring in one process. The spec's validation bench."
+requires-python = ">=3.12"
+dependencies = [
+    "textual>=8.2.7,<9.0",
+    "pydantic>=2.7,<3.0",
+    "a2a-sdk>=0.2",
+    "pydantic-settings>=2.5",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "cryptography>=43",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.11"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[project.scripts]
+shadowbox = "shadowbox.tui.app:main"
+shadowbox-smoke = "shadowbox.smoke:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["shadowbox"]
