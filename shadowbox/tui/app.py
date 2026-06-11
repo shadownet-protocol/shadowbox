@@ -11,13 +11,19 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
+    Select,
     Static,
 )
 
-from shadowbox import crypto
-from shadowbox.config import Settings, load_config
-from shadowbox.contacts import ContactStore, ToolError
-from shadowbox.init import initialize, plan, state, wipe
+from shadowbox.config import (
+    PersonaTemplate,
+    ProviderCred,
+    TelegramCred,
+    load_personas,
+    load_secrets,
+)
+from shadowbox.contacts import ToolError
+from shadowbox.lab import Lab, LabError, Shadow
 from shadowbox.models import AddContactInput, ContactProfile
 
 
@@ -117,6 +123,73 @@ class NotesScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class AddShadowScreen(ModalScreen[dict | None]):
+    BINDINGS = [("escape", "cancel", "cancel")]
+
+    def __init__(
+        self,
+        personas: list[PersonaTemplate],
+        providers: list[ProviderCred],
+        telegrams: list[TelegramCred],
+    ):
+        super().__init__()
+        self._personas = personas
+        self._providers = providers
+        self._telegrams = telegrams
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("new shadow", id="dialog-title")
+            yield Input(placeholder="name", id="name")
+            yield Select(
+                [(p.display, p.id) for p in self._personas],
+                prompt="persona (optional)",
+                id="persona",
+            )
+            yield Select(
+                [(f"{p.name}  [{p.kind}: {p.model}]", p.name) for p in self._providers],
+                prompt="provider (optional)",
+                id="provider",
+            )
+            yield Select(
+                [(t.name, t.name) for t in self._telegrams],
+                prompt="telegram (optional)",
+                id="telegram",
+            )
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Create", variant="success", id="confirm")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "confirm":
+            self.dismiss(None)
+            return
+        self._submit()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _select_value(self, select_id: str) -> str | None:
+        value = self.query_one(f"#{select_id}", Select).value
+        return None if value is Select.BLANK else value
+
+    def _submit(self) -> None:
+        name = self.query_one("#name", Input).value.strip()
+        if not name:
+            return
+        self.dismiss(
+            {
+                "name": name,
+                "persona": self._select_value("persona"),
+                "provider": self._select_value("provider"),
+                "telegram": self._select_value("telegram"),
+            }
+        )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ContactsScreen(Screen):
     BINDINGS = [
         ("a", "add", "add contact"),
@@ -125,9 +198,9 @@ class ContactsScreen(Screen):
         ("escape", "back", "back"),
     ]
 
-    def __init__(self, persona: str):
+    def __init__(self, shadow: Shadow):
         super().__init__()
-        self.persona = persona
+        self.shadow = shadow
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -135,8 +208,8 @@ class ContactsScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.app.sub_title = f"{self.persona} — contacts"
-        self.store = ContactStore(Settings(), self.persona)
+        self.app.sub_title = f"{self.shadow.name} — contacts"
+        self.store = self.shadow.contacts()
         table = self.query_one(DataTable)
         table.add_columns("contact", "display name", "grants")
         self._reload()
@@ -218,17 +291,28 @@ class ContactsScreen(Screen):
 class ShadowboxApp(App):
     TITLE = "shadowbox"
     CSS = """
-    ConfirmScreen, AddContactScreen, NotesScreen { align: center middle; }
+    ConfirmScreen, AddContactScreen, NotesScreen, AddShadowScreen {
+        align: center middle;
+    }
     #dialog {
         width: 90; height: auto; max-height: 80%;
         border: round $primary; padding: 1 2; background: $surface;
     }
     #dialog-title { text-style: bold; margin-bottom: 1; }
     #dialog Input { margin: 1 0; }
+    #dialog Select { margin: 1 0; }
     #dialog-buttons { height: auto; align-horizontal: center; margin-top: 1; }
     #dialog-buttons Button { margin: 0 2; }
     """
-    BINDINGS = [("q", "quit", "quit"), ("r", "reinit", "reinitialize")]
+    BINDINGS = [
+        ("q", "quit", "quit"),
+        ("n", "new_shadow", "new shadow"),
+        ("r", "reinit", "reinitialize"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        self.lab = Lab()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -240,13 +324,12 @@ class ShadowboxApp(App):
 
     @work
     async def _start(self) -> None:
-        settings = Settings()
-        st, reason = state(settings)
+        st, reason = self.lab.state()
         if st == "fresh":
             ok = await self.push_screen_wait(
                 ConfirmScreen(
                     "shadowbox is not initialized.",
-                    plan(settings),
+                    self.lab.plan(),
                     "Initialize",
                     variant="success",
                     cancel_label="Quit",
@@ -255,16 +338,16 @@ class ShadowboxApp(App):
             if not ok:
                 self.exit()
                 return
-            initialize(settings)
+            self.lab.initialize()
         elif st == "broken":
             ok = await self.push_screen_wait(
                 ConfirmScreen(
-                    f"state at {settings.home_dir} is broken: {reason}",
+                    f"state at {self.lab.settings.home_dir} is broken: {reason}",
                     [
                         "reinitializing permanently deletes:",
                         "  keys/  (identities are unrecoverable)",
-                        "  config.yaml",
-                        "  shadowbox.db",
+                        "  config.yaml, shadowbox.db, hermes/",
+                        "personas.yaml and secrets.yaml are kept",
                     ],
                     "Delete and reinitialize",
                     cancel_label="Quit",
@@ -273,44 +356,68 @@ class ShadowboxApp(App):
             if not ok:
                 self.exit()
                 return
-            wipe(settings)
-            initialize(settings)
-        self._load_personas(settings)
+            self.lab.wipe()
+            self.lab.initialize()
+        self._load_shadows()
 
-    def _load_personas(self, settings: Settings) -> None:
+    def _load_shadows(self) -> None:
         lv = self.query_one(ListView)
         lv.clear()
-        for p in load_config(settings).personas:
-            key = crypto.load_key(settings.keys_dir / f"{p.name}.pem")
-            uri = f"shadow://key:{crypto.public_multibase(key)}@localhost:{p.port}"
-            item = ListItem(Label(f"[b]{p.name}[/b]  {uri}"))
-            item.persona_name = p.name
+        for shadow in self.lab.shadows():
+            extras = " / ".join(
+                v
+                for v in (shadow.config.persona, shadow.config.provider)
+                if v is not None
+            )
+            suffix = f"  [dim]{extras}[/dim]" if extras else ""
+            item = ListItem(Label(f"[b]{shadow.name}[/b]  {shadow.uri}{suffix}"))
+            item.shadow_name = shadow.name
             lv.append(item)
         lv.focus()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.push_screen(ContactsScreen(event.item.persona_name))
+        self.push_screen(ContactsScreen(self.lab.get(event.item.shadow_name)))
+
+    @work
+    async def action_new_shadow(self) -> None:
+        try:
+            personas = load_personas(self.lab.settings).personas
+            secrets = load_secrets(self.lab.settings)
+        except FileNotFoundError:
+            self.notify("lab not initialized", severity="error")
+            return
+        result = await self.push_screen_wait(
+            AddShadowScreen(personas, secrets.providers, secrets.telegram)
+        )
+        if result is None:
+            return
+        try:
+            shadow, lines = self.lab.add_shadow(**result)
+        except LabError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._load_shadows()
+        self.notify("\n".join(lines), markup=False)
 
     @work
     async def action_reinit(self) -> None:
-        settings = Settings()
         ok = await self.push_screen_wait(
             ConfirmScreen(
                 "delete and reinitialize?",
                 [
-                    f"permanently deletes from {settings.home_dir}:",
+                    f"permanently deletes from {self.lab.settings.home_dir}:",
                     "  keys/  (identities are unrecoverable)",
-                    "  config.yaml",
-                    "  shadowbox.db",
+                    "  config.yaml, shadowbox.db, hermes/",
+                    "personas.yaml and secrets.yaml are kept",
                 ],
                 "Delete and reinitialize",
             )
         )
         if not ok:
             return
-        wipe(settings)
-        initialize(settings)
-        self._load_personas(settings)
+        self.lab.wipe()
+        self.lab.initialize()
+        self._load_shadows()
         self.notify("reinitialized")
 
 
