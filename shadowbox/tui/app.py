@@ -25,6 +25,7 @@ from shadowbox.config import (
 from shadowbox.contacts import ToolError
 from shadowbox.lab import Lab, LabError, Shadow
 from shadowbox.models import AddContactInput, ContactProfile
+from shadowbox.sidecar import SidecarFleet
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -313,6 +314,7 @@ class ShadowboxApp(App):
     def __init__(self):
         super().__init__()
         self.lab = Lab()
+        self.fleet = SidecarFleet(self.lab)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -358,7 +360,11 @@ class ShadowboxApp(App):
                 return
             self.lab.wipe()
             self.lab.initialize()
+        self.fleet.start_all()
         self._load_shadows()
+
+    def on_unmount(self) -> None:
+        self.fleet.stop_all()
 
     def _load_shadows(self) -> None:
         lv = self.query_one(ListView)
@@ -369,8 +375,13 @@ class ShadowboxApp(App):
                 for v in (shadow.config.persona, shadow.config.provider)
                 if v is not None
             )
-            suffix = f"  [dim]{extras}[/dim]" if extras else ""
-            item = ListItem(Label(f"[b]{shadow.name}[/b]  {shadow.uri}{suffix}"))
+            mark = "●" if self.fleet.running(shadow.name) else "○"
+            detail = f"mcp :{shadow.config.mcp_port} {mark}" + (
+                f"  {extras}" if extras else ""
+            )
+            item = ListItem(
+                Label(f"[b]{shadow.name}[/b]  {shadow.uri}  [dim]{detail}[/dim]")
+            )
             item.shadow_name = shadow.name
             lv.append(item)
         lv.focus()
@@ -396,6 +407,7 @@ class ShadowboxApp(App):
         except LabError as exc:
             self.notify(str(exc), severity="error")
             return
+        self.fleet.start(shadow.name)
         self._load_shadows()
         self.notify("\n".join(lines), markup=False)
 
@@ -415,8 +427,10 @@ class ShadowboxApp(App):
         )
         if not ok:
             return
+        self.fleet.stop_all()
         self.lab.wipe()
         self.lab.initialize()
+        self.fleet.start_all()
         self._load_shadows()
         self.notify("reinitialized")
 

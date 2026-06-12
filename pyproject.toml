@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6.0",
     "cryptography>=43",
     "hermes-agent",
+    "mcp>=1.9",
 ]
 
 [tool.uv.sources]
@@ -28,6 +29,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [project.scripts]
 shadowbox = "shadowbox.tui.app:main"
+shadowbox-serve = "shadowbox.sidecar:main"
 shadowbox-smoke = "shadowbox.smoke:main"
 
 [build-system]

@@ -17,7 +17,7 @@ from shadowbox.models import (
 
 KNOWN_GRANTS = {"messaging"}
 
-_SCHEMA = """
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
     persona TEXT NOT NULL,
     shadowname TEXT NOT NULL,
@@ -60,6 +60,11 @@ def parse_direct_uri(name: str) -> tuple[str, str, str | None] | None:
     return parts.password, endpoint, pin
 
 
+def wire_name(name: str) -> str:
+    direct = parse_direct_uri(name)
+    return direct[0] if direct else name
+
+
 def resolve(name: str) -> ResolveResult:
     direct = parse_direct_uri(name)
     if direct is None:
@@ -71,22 +76,18 @@ def resolve(name: str) -> ResolveResult:
 class ContactStore:
     def __init__(self, settings: Settings, persona: str):
         self.persona = persona
-        self.db = sqlite3.connect(settings.db_file)
+        self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self.db.execute(_SCHEMA)
+        self.db.execute(SCHEMA)
         self.db.commit()
 
     def close(self) -> None:
         self.db.close()
 
-    def _wire_name(self, name: str) -> str:
-        direct = parse_direct_uri(name)
-        return direct[0] if direct else name
-
     def _row(self, name: str) -> sqlite3.Row:
         row = self.db.execute(
             "SELECT * FROM contacts WHERE persona = ? AND shadowname = ?",
-            (self.persona, self._wire_name(name)),
+            (self.persona, wire_name(name)),
         ).fetchone()
         if row is None:
             raise ToolError("not_contact")
