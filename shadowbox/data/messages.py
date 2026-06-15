@@ -66,6 +66,9 @@ class MessageStore(ABC):
     ) -> bool: ...
 
     @abstractmethod
+    def graduate(self, peer: str) -> int: ...
+
+    @abstractmethod
     def seen(self, sender: str, message_id: str) -> bool: ...
 
     @abstractmethod
@@ -170,6 +173,15 @@ class SqliteMessageStore(MessageStore):
             (self.persona, peer, context_id, cutoff),
         ).fetchone()
         return row is not None
+
+    def graduate(self, peer: str) -> int:
+        cur = self.db.execute(
+            "UPDATE messages SET status = 'inbox' WHERE persona = ?"
+            " AND direction = 'inbound' AND peer = ? AND status = 'stranger_review'",
+            (self.persona, peer),
+        )
+        self.db.commit()
+        return cur.rowcount
 
     def seen(self, sender: str, message_id: str) -> bool:
         row = self.db.execute(

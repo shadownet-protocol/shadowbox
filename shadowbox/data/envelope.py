@@ -23,6 +23,7 @@ class Envelope:
         body: dict,
         iat: int,
         exp: int,
+        creds: list[str] | None = None,
     ):
         self.sender = sender
         self.recipient = recipient
@@ -31,6 +32,7 @@ class Envelope:
         self.body = body
         self.iat = iat
         self.exp = exp
+        self.creds = creds or []
 
     @staticmethod
     def _canonical_input(message: dict) -> dict:
@@ -56,6 +58,7 @@ class Envelope:
         body: dict,
         context_id: str,
         now: int,
+        creds: list[str] | None = None,
     ) -> dict:
         message = {
             "role": "ROLE_USER",
@@ -74,6 +77,8 @@ class Envelope:
             "msgHash": Jcs.sha256(cls._canonical_input(message)),
             "body": body,
         }
+        if creds:
+            payload["creds"] = creds
         header = {"alg": "EdDSA", "typ": ENVELOPE_TYP, "kid": sender}
         message["metadata"] = {URN: key.sign_jws(header, payload)}
         return message
@@ -117,4 +122,5 @@ class Envelope:
             payload["body"],
             iat,
             exp,
+            payload.get("creds") or [],
         )

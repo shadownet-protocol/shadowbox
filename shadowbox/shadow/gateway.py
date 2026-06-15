@@ -71,7 +71,7 @@ class Gateway:
             "resolve": lambda inp: resolve(inp.name),
             "contacts": lambda inp: self.shadow.contacts.contacts(inp.query),
             "contact_detail": lambda inp: self.shadow.contacts.contact_detail(inp.name),
-            "add_contact": lambda inp: self.shadow.contacts.add_contact(inp),
+            "add_contact": self._add_contact,
             "grant": lambda inp: self.shadow.contacts.grant(
                 inp.name, inp.grant, inp.allowed
             ),
@@ -102,6 +102,11 @@ class Gateway:
         return IdentityResult(
             direct_uri=self.shadow.uri, pk=self.shadow.public_key.multibase
         )
+
+    def _add_contact(self, inp):
+        result = self.shadow.contacts.add_contact(inp)
+        self.shadow.messages.graduate(result.shadowname)
+        return result
 
     def tool_list(self) -> list[types.Tool]:
         return [

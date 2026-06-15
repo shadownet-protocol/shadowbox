@@ -59,6 +59,17 @@ class Secrets(BaseModel):
         return next((t for t in self.telegram if t.name == name), None)
 
 
+class TrustEntry(BaseModel):
+    issuer: str
+    accept: list[str] = ["org_affiliation"]
+
+
+class TrustConfig(BaseModel):
+    issuers: list[TrustEntry] = []
+    from_contact: list[str] = []
+    from_stranger: list[str] = ["org_affiliation"]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SHADOWBOX_")
 
@@ -92,6 +103,14 @@ class Settings(BaseSettings):
     def hermes_dir(self) -> Path:
         return self.home_dir / "hermes"
 
+    @property
+    def trust_file(self) -> Path:
+        return self.home_dir / "trust.yaml"
+
+    @property
+    def issuer_key_file(self) -> Path:
+        return self.keys_dir / "lab-issuer.pem"
+
 
 def load_config(settings: Settings) -> Config:
     return Config.model_validate(yaml.safe_load(settings.config_file.read_text()))
@@ -124,3 +143,13 @@ def save_secrets(settings: Settings, secrets: Secrets) -> None:
         yaml.safe_dump(secrets.model_dump(), sort_keys=False)
     )
     settings.secrets_file.chmod(0o600)
+
+
+def load_trust(settings: Settings) -> TrustConfig:
+    return TrustConfig.model_validate(
+        yaml.safe_load(settings.trust_file.read_text()) or {}
+    )
+
+
+def save_trust(settings: Settings, trust: TrustConfig) -> None:
+    settings.trust_file.write_text(yaml.safe_dump(trust.model_dump(), sort_keys=False))

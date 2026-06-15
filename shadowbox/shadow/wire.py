@@ -11,6 +11,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from shadowbox.data.agentcard import AgentCard
+from shadowbox.data.credential import satisfies
 from shadowbox.data.envelope import URN, Envelope, WireError
 from shadowbox.ids import ulid
 from shadowbox.models import SendResult
@@ -48,13 +49,15 @@ class Wire:
             return SendResult(
                 message_id=ulid(), context_id=cid, status="rejected", error=exc.code
             )
+        now = int(time.time())
         message = Envelope.mint(
             self.shadow.signing_key,
             self.shadow.public_key.multibase,
             recipient_pk,
             body,
             cid,
-            int(time.time()),
+            now,
+            self.shadow.credentials.valid_tokens(now),
         )
         message_id = message["messageId"]
         self.shadow.messages.record_outbound(message_id, cid, recipient_pk, body)
@@ -160,6 +163,9 @@ class Wire:
             if address is not None:
                 self.shadow.contacts.add_peer(address)
             return "inbox"
+        trust = self.shadow.trust
+        if satisfies(trust, envelope.creds, trust.from_stranger, int(time.time())):
+            return "stranger_review"
         raise WireError("creds_rejected", 403)
 
     @staticmethod

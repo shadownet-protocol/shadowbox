@@ -10,10 +10,13 @@ class AgentCard:
     def build(cls, pk: str, url: str) -> "AgentCard":
         return cls(
             {
-                "protocolVersion": "0.2",
+                "protocolVersion": "0.3.0",
                 "name": pk,
+                "description": "Shadownet Shadow",
+                "version": "0.2.0",
                 "url": url,
                 "preferredTransport": "JSONRPC",
+                "supportedInterfaces": [{"url": url, "transport": "JSONRPC"}],
                 "capabilities": {
                     "extensions": [
                         {
@@ -23,7 +26,9 @@ class AgentCard:
                         }
                     ]
                 },
-                "supportedInterfaces": [{"url": url, "transport": "JSONRPC"}],
+                "defaultInputModes": ["application/a2a+json"],
+                "defaultOutputModes": ["application/a2a+json"],
+                "skills": [],
                 "securitySchemes": {
                     "shadownet:pinned-self-signed": {"type": "mutualTLS"}
                 },

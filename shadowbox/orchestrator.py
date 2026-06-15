@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import sqlite3
+import time
 from secrets import token_urlsafe
 
 import httpx
@@ -13,15 +14,19 @@ from shadowbox.config import (
     Secrets,
     Settings,
     ShadowConfig,
+    TrustConfig,
+    TrustEntry,
     load_config,
     load_personas,
     load_secrets,
     save_config,
     save_personas,
     save_secrets,
+    save_trust,
 )
 from shadowbox.crypto import SigningKey
 from shadowbox.data.agentcard import AgentCard
+from shadowbox.data.credential import Credential, SqliteCredentialStore
 from shadowbox.data.envelope import WireError
 from shadowbox.shadow import Shadow
 
@@ -163,7 +168,13 @@ class Orchestrator:
         for shadow in config.shadows:
             if not (s.keys_dir / f"{shadow.name}.pem").exists():
                 return "broken", f"keys/{shadow.name}.pem missing"
-        for required in (s.db_file, s.personas_file, s.secrets_file):
+        for required in (
+            s.db_file,
+            s.personas_file,
+            s.secrets_file,
+            s.trust_file,
+            s.issuer_key_file,
+        ):
             if not required.exists():
                 return "broken", f"{required.name} missing"
         return "ok", ""
@@ -177,6 +188,7 @@ class Orchestrator:
                 f" wire :{port}, mcp :{mcp_port})"
             )
         lines.append(f"  config.yaml  ({len(DEFAULT_SHADOWS)} shadows)")
+        lines.append("  keys/lab-issuer.pem + trust.yaml  (stranger-review issuer)")
         lines.append("  shadowbox.db")
         if not s.personas_file.exists():
             lines.append("  personas.yaml  (seed persona templates)")
@@ -191,10 +203,24 @@ class Orchestrator:
         s.hermes_dir.mkdir(exist_ok=True)
         lines = [f"created {s.home_dir}"]
 
+        issuer = SigningKey.generate()
+        issuer.save(s.issuer_key_file)
+        save_trust(
+            s,
+            TrustConfig(
+                issuers=[
+                    TrustEntry(issuer=issuer.multibase, accept=["org_affiliation"])
+                ]
+            ),
+        )
+        lines.append(f"wrote {s.trust_file} (lab issuer {issuer.multibase[:16]}…)")
+
         shadows: list[ShadowConfig] = []
+        keys: dict[str, SigningKey] = {}
         for name, port, mcp_port in DEFAULT_SHADOWS:
             key = SigningKey.generate()
             key.save(s.keys_dir / f"{name}.pem")
+            keys[name] = key
             shadows.append(
                 ShadowConfig(
                     name=name, port=port, mcp_port=mcp_port, token=token_urlsafe(16)
@@ -213,8 +239,17 @@ class Orchestrator:
 
         sqlite3.connect(s.db_file).close()
         lines.append(f"created {s.db_file}")
+        for name, key in keys.items():
+            self._issue_credential(issuer, name, key.multibase)
         self._invalidate()
         return lines
+
+    def _issue_credential(self, issuer: SigningKey, name: str, subject: str) -> None:
+        now = int(time.time())
+        token = Credential.mint(issuer, subject, now)
+        store = SqliteCredentialStore(self.settings, name)
+        store.add(token, now + 30 * 86400)
+        store.close()
 
     def wipe(self) -> list[str]:
         s = self.settings
@@ -224,7 +259,7 @@ class Orchestrator:
             if directory.exists():
                 shutil.rmtree(directory)
                 lines.append(f"deleted {directory}")
-        for f in (s.config_file, s.db_file):
+        for f in (s.config_file, s.db_file, s.trust_file):
             if f.exists():
                 f.unlink()
                 lines.append(f"deleted {f}")
@@ -274,6 +309,7 @@ class Orchestrator:
         key.save(s.keys_dir / f"{name}.pem")
         config.shadows.append(shadow_config)
         save_config(s, config)
+        self._issue_credential(SigningKey.load(s.issuer_key_file), name, key.multibase)
         self._invalidate()
 
         shadow = self.get(name)

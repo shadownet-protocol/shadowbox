@@ -4,9 +4,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shadowbox.address import Address
-from shadowbox.config import Settings, ShadowConfig
+from shadowbox.config import Settings, ShadowConfig, TrustConfig, load_trust
 from shadowbox.crypto import PublicKey, SigningKey
 from shadowbox.data.contacts import ContactStore, SqliteContactStore
+from shadowbox.data.credential import CredentialStore, SqliteCredentialStore
 from shadowbox.data.directives import DirectiveStore, SqliteDirectiveStore
 from shadowbox.data.messages import MessageStore, SqliteMessageStore
 from shadowbox.shadow.agent import Agent
@@ -33,6 +34,8 @@ class Shadow:
         self._contacts: ContactStore | None = None
         self._directives: DirectiveStore | None = None
         self._messages: MessageStore | None = None
+        self._credentials: CredentialStore | None = None
+        self._trust: TrustConfig | None = None
         self._gateway: Gateway | None = None
         self._agent: Agent | None = None
         self._wire: Wire | None = None
@@ -82,6 +85,22 @@ class Shadow:
         return self._messages
 
     @property
+    def credentials(self) -> CredentialStore:
+        if self._credentials is None:
+            self._credentials = SqliteCredentialStore(self.settings, self.name)
+        return self._credentials
+
+    @property
+    def trust(self) -> TrustConfig:
+        if self._trust is None:
+            self._trust = (
+                load_trust(self.settings)
+                if self.settings.trust_file.exists()
+                else TrustConfig()
+            )
+        return self._trust
+
+    @property
     def gateway(self) -> Gateway:
         if self._gateway is None:
             self._gateway = Gateway(self)
@@ -103,7 +122,13 @@ class Shadow:
         for component in (self._gateway, self._wire):
             if component is not None:
                 component.stop()
-        for store in (self._contacts, self._directives, self._messages):
+        for store in (
+            self._contacts,
+            self._directives,
+            self._messages,
+            self._credentials,
+        ):
             if store is not None:
                 store.close()
         self._contacts = self._directives = self._messages = None
+        self._credentials = None
