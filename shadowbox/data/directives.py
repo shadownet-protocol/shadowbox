@@ -1,10 +1,12 @@
 import json
 import sqlite3
+from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 
+from shadowbox.address import Address
 from shadowbox.config import Settings
-from shadowbox.contacts import SCHEMA as CONTACTS_SCHEMA
-from shadowbox.contacts import ToolError, wire_name
+from shadowbox.data.contacts import SCHEMA as CONTACTS_SCHEMA
+from shadowbox.data.contacts import ToolError
 from shadowbox.models import (
     DirectiveItem,
     DirectiveLayer,
@@ -25,7 +27,22 @@ CREATE TABLE IF NOT EXISTS directives (
 """
 
 
-class DirectiveStore:
+class DirectiveStore(ABC):
+    persona: str
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+    @abstractmethod
+    def layers(
+        self, contact: str | None = None, context_id: str | None = None
+    ) -> DirectivesResult: ...
+
+    @abstractmethod
+    def set_layer(self, inp: SetDirectivesInput) -> Ok: ...
+
+
+class SqliteDirectiveStore(DirectiveStore):
     def __init__(self, settings: Settings, persona: str):
         self.persona = persona
         self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
@@ -74,7 +91,11 @@ class DirectiveStore:
         if (layer := self._layer("global", "")) is not None:
             result.append(layer)
         if contact is not None:
-            if (layer := self._layer("contact", wire_name(contact))) is not None:
+            try:
+                ref = Address.parse(contact).wire_name
+            except ValueError:
+                ref = contact
+            if (layer := self._layer("contact", ref)) is not None:
                 result.append(layer)
         if context_id is not None:
             if (layer := self._layer("context", context_id)) is not None:
@@ -89,7 +110,10 @@ class DirectiveStore:
         elif inp.ref is None:
             raise ValueError(f"ref required for {inp.scope} scope")
         elif inp.scope == "contact":
-            ref = wire_name(inp.ref)
+            try:
+                ref = Address.parse(inp.ref).wire_name
+            except ValueError:
+                raise ToolError("not_contact") from None
             known = self.db.execute(
                 "SELECT 1 FROM contacts WHERE persona = ? AND shadowname = ?",
                 (self.persona, ref),

@@ -1,8 +1,9 @@
 import json
 import sqlite3
+from abc import ABC, abstractmethod
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
 
+from shadowbox.address import Address
 from shadowbox.config import Settings
 from shadowbox.models import (
     AddContactInput,
@@ -44,36 +45,47 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def parse_direct_uri(name: str) -> tuple[str, str, str | None] | None:
-    if not name.startswith("shadow://key:"):
-        return None
-    parts = urlsplit(name)
-    if not parts.password or not parts.hostname:
-        return None
-    port = f":{parts.port}" if parts.port else ""
-    endpoint = f"https://{parts.hostname}{port}"
-    pin = (
-        parts.fragment.removeprefix("sha256:")
-        if parts.fragment.startswith("sha256:")
-        else None
-    )
-    return parts.password, endpoint, pin
-
-
-def wire_name(name: str) -> str:
-    direct = parse_direct_uri(name)
-    return direct[0] if direct else name
-
-
 def resolve(name: str) -> ResolveResult:
-    direct = parse_direct_uri(name)
-    if direct is None:
+    try:
+        addr = Address.parse(name)
+    except ValueError:
+        raise ToolError("resolve_failed") from None
+    if addr.public_key is None or addr.endpoint is None:
         raise ToolError("resolve_failed")
-    pk, endpoint, _ = direct
-    return ResolveResult(shadowname=pk, pk=pk, endpoint=endpoint)
+    return ResolveResult(
+        shadowname=addr.wire_name, pk=addr.public_key.multibase, endpoint=addr.endpoint
+    )
 
 
-class ContactStore:
+class ContactStore(ABC):
+    persona: str
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+    @abstractmethod
+    def add_contact(self, inp: AddContactInput) -> AddContactResult: ...
+
+    @abstractmethod
+    def add_peer(self, addr: Address) -> None: ...
+
+    @abstractmethod
+    def contacts(self, query: str | None = None) -> ContactsResult: ...
+
+    @abstractmethod
+    def contact_detail(self, name: str) -> ContactDetail: ...
+
+    @abstractmethod
+    def try_detail(self, name: str) -> ContactDetail | None: ...
+
+    @abstractmethod
+    def grant(self, name: str, grant: str, allowed: bool) -> Ok: ...
+
+    @abstractmethod
+    def set_contact_profile(self, name: str, profile: ContactProfile) -> Ok: ...
+
+
+class SqliteContactStore(ContactStore):
     def __init__(self, settings: Settings, persona: str):
         self.persona = persona
         self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
@@ -85,41 +97,68 @@ class ContactStore:
         self.db.close()
 
     def _row(self, name: str) -> sqlite3.Row:
-        row = self.db.execute(
-            "SELECT * FROM contacts WHERE persona = ? AND shadowname = ?",
-            (self.persona, wire_name(name)),
-        ).fetchone()
+        row = self._try_row(name)
         if row is None:
             raise ToolError("not_contact")
         return row
 
+    def _try_row(self, name: str) -> sqlite3.Row | None:
+        try:
+            wire = Address.parse(name).wire_name
+        except ValueError:
+            return None
+        return self.db.execute(
+            "SELECT * FROM contacts WHERE persona = ? AND shadowname = ?",
+            (self.persona, wire),
+        ).fetchone()
+
+    def _insert(
+        self,
+        addr: Address,
+        display_name: str | None,
+        grants: list[str],
+        profile: ContactProfile | None,
+    ) -> None:
+        assert addr.public_key is not None and addr.endpoint is not None
+        self.db.execute(
+            "INSERT INTO contacts (persona, shadowname, display_name, pk,"
+            " endpoint, grants, profile, added_at, tls_pin)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.persona,
+                addr.wire_name,
+                display_name,
+                addr.public_key.multibase,
+                addr.endpoint,
+                json.dumps(grants),
+                profile.model_dump_json(by_alias=True) if profile else None,
+                _now(),
+                addr.pin,
+            ),
+        )
+
     def add_contact(self, inp: AddContactInput) -> AddContactResult:
-        resolved = resolve(inp.name)
-        _, _, pin = parse_direct_uri(inp.name)
+        try:
+            addr = Address.parse(inp.name)
+        except ValueError:
+            raise ToolError("resolve_failed") from None
+        if addr.public_key is None or addr.endpoint is None:
+            raise ToolError("resolve_failed")
         for grant in inp.grants:
             if grant not in KNOWN_GRANTS:
                 raise ToolError("unknown_grant")
         try:
-            self.db.execute(
-                "INSERT INTO contacts (persona, shadowname, display_name, pk,"
-                " endpoint, grants, profile, added_at, tls_pin)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    self.persona,
-                    resolved.shadowname,
-                    inp.display_name,
-                    resolved.pk,
-                    resolved.endpoint,
-                    json.dumps(inp.grants),
-                    inp.profile.model_dump_json(by_alias=True) if inp.profile else None,
-                    _now(),
-                    pin,
-                ),
-            )
+            self._insert(addr, inp.display_name, inp.grants, inp.profile)
         except sqlite3.IntegrityError:
             raise ToolError("already_contact") from None
         self.db.commit()
-        return AddContactResult(shadowname=resolved.shadowname)
+        return AddContactResult(shadowname=addr.wire_name)
+
+    def add_peer(self, addr: Address) -> None:
+        if self._try_row(addr.wire_name) is not None:
+            return
+        self._insert(addr, None, ["messaging"], None)
+        self.db.commit()
 
     def contacts(self, query: str | None = None) -> ContactsResult:
         rows = self.db.execute(
@@ -144,8 +183,7 @@ class ContactStore:
             ]
         return ContactsResult(contacts=summaries)
 
-    def contact_detail(self, name: str) -> ContactDetail:
-        r = self._row(name)
+    def _detail(self, r: sqlite3.Row) -> ContactDetail:
         return ContactDetail(
             shadowname=r["shadowname"],
             display_name=r["display_name"],
@@ -161,6 +199,13 @@ class ContactStore:
             last_seen=r["last_seen"],
             tls_pin=r["tls_pin"],
         )
+
+    def contact_detail(self, name: str) -> ContactDetail:
+        return self._detail(self._row(name))
+
+    def try_detail(self, name: str) -> ContactDetail | None:
+        row = self._try_row(name)
+        return self._detail(row) if row is not None else None
 
     def grant(self, name: str, grant: str, allowed: bool) -> Ok:
         if grant not in KNOWN_GRANTS:
