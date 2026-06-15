@@ -1,14 +1,14 @@
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-from shadowbox.config import (
-    PersonaTemplate,
-    ProviderCred,
-    Settings,
-    ShadowConfig,
-    TelegramCred,
-)
+from shadowbox.config import PersonaTemplate, ProviderCred, TelegramCred
+
+if TYPE_CHECKING:
+    from shadowbox.shadow.shadow import Shadow
 
 ENV_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -17,21 +17,22 @@ ENV_KEYS = {
 }
 
 
-class HermesHome:
-    def __init__(self, settings: Settings, shadow: ShadowConfig):
-        self.settings = settings
+class Agent:
+    """The host LLM behind a Shadow: a Hermes installation in an isolated HOME."""
+
+    def __init__(self, shadow: Shadow):
         self.shadow = shadow
 
     @property
     def home(self) -> Path:
-        return self.settings.hermes_dir / self.shadow.name
+        return self.shadow.settings.hermes_dir / self.shadow.name
 
     @property
     def dot(self) -> Path:
         return self.home / ".hermes"
 
     @property
-    def exists(self) -> bool:
+    def configured(self) -> bool:
         return (self.dot / "config.yaml").exists()
 
     def launch_command(self) -> str:
@@ -48,8 +49,8 @@ class HermesHome:
             "model": {"default": provider.model, "provider": provider.kind},
             "mcp_servers": {
                 "shadownet": {
-                    "url": f"http://127.0.0.1:{self.shadow.mcp_port}/mcp",
-                    "headers": {"Authorization": f"Bearer {self.shadow.token}"},
+                    "url": f"http://127.0.0.1:{self.shadow.config.mcp_port}/mcp",
+                    "headers": {"Authorization": f"Bearer {self.shadow.config.token}"},
                 }
             },
         }
@@ -57,9 +58,7 @@ class HermesHome:
         if telegram:
             env.append(f"TELEGRAM_BOT_TOKEN={telegram.token}")
             if telegram.allowed_users:
-                env.append(
-                    "TELEGRAM_ALLOWED_USERS=" + ",".join(telegram.allowed_users)
-                )
+                env.append("TELEGRAM_ALLOWED_USERS=" + ",".join(telegram.allowed_users))
                 config["gateway"] = {
                     "platforms": {
                         "telegram": {"extra": {"allow_from": telegram.allowed_users}}
