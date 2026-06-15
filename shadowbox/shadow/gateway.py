@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 import mcp.types as types
 import uvicorn
 from mcp.server.lowlevel import Server
+from mcp.server.session import ServerSession
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from pydantic import BaseModel
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
@@ -16,12 +18,19 @@ from starlette.routing import Mount
 from shadowbox.data.contacts import resolve
 from shadowbox.models import (
     TOOLS,
+    Event,
     IdentityResult,
     InboxWaitResult,
 )
 
 if TYPE_CHECKING:
     from shadowbox.shadow.shadow import Shadow
+
+
+class _Notification(BaseModel):
+    method: str
+    params: dict
+
 
 DESCRIPTIONS = {
     "identity": "This Shadow's own addressing forms, key, and credentials.",
@@ -40,8 +49,6 @@ DESCRIPTIONS = {
     "contexts": "List conversation contexts.",
     "history": "Read stored messages.",
 }
-
-MAX_WAIT_SECONDS = 60
 
 
 class _BearerAuth:
@@ -66,6 +73,10 @@ class Gateway:
     def __init__(self, shadow: Shadow):
         self.shadow = shadow
         self._server: uvicorn.Server | None = None
+        self._mcp: Server | None = None
+        self._sessions: set[ServerSession] = set()
+        self._pump: asyncio.Task | None = None
+        self._stop = False
         self._handlers = {
             "identity": self._identity,
             "resolve": lambda inp: resolve(inp.name),
@@ -81,7 +92,7 @@ class Gateway:
             "directives": lambda inp: self.shadow.directives.layers(
                 inp.contact, inp.context_id
             ),
-            "set_directives": lambda inp: self.shadow.directives.set_layer(inp),
+            "set_directives": self._set_directives,
             "inbox": lambda inp: self.shadow.messages.inbox(
                 inp.since, inp.contact, inp.intent, inp.include_review, inp.limit
             ),
@@ -108,6 +119,14 @@ class Gateway:
         self.shadow.messages.graduate(result.shadowname)
         return result
 
+    def _set_directives(self, inp):
+        result = self.shadow.directives.set_layer(inp)
+        data = {"scope": inp.scope}
+        if inp.ref is not None:
+            data["ref"] = inp.ref
+        self.shadow.events.emit("directives.updated", data)
+        return result
+
     def tool_list(self) -> list[types.Tool]:
         return [
             types.Tool(
@@ -119,7 +138,16 @@ class Gateway:
             for name, (inp, out) in TOOLS.items()
         ]
 
+    def _track_session(self) -> None:
+        if self._mcp is None:
+            return
+        try:
+            self._sessions.add(self._mcp.request_context.session)
+        except LookupError:
+            pass
+
     async def call(self, name: str, arguments: dict | None) -> dict:
+        self._track_session()
         inp = TOOLS[name][0].model_validate(arguments or {})
         if name == "send":
             result = await self.shadow.wire.send(
@@ -132,18 +160,20 @@ class Gateway:
                 inp.context_id, inp.body.model_dump(by_alias=True, exclude_none=True)
             )
         elif name == "inbox_wait":
-            await asyncio.sleep(max(0, min(inp.timeout_seconds, MAX_WAIT_SECONDS)))
-            result = InboxWaitResult(events=[], next_event_id=inp.last_event_id)
+            events, next_id = await self.shadow.events.wait(
+                inp.last_event_id, inp.timeout_seconds
+            )
+            result = InboxWaitResult(events=events, next_event_id=next_id)
         else:
             result = self._handlers[name](inp)
         return result.model_dump(mode="json", by_alias=True)
 
     def build_app(self) -> _BearerAuth:
-        server = Server(f"shadownet-{self.shadow.name}")
-        server.list_tools()(self._list_tools)
-        server.call_tool()(self.call)
+        self._mcp = Server(f"shadownet-{self.shadow.name}")
+        self._mcp.list_tools()(self._list_tools)
+        self._mcp.call_tool()(self.call)
         manager = StreamableHTTPSessionManager(
-            app=server, json_response=True, stateless=True
+            app=self._mcp, json_response=True, stateless=False
         )
 
         async def endpoint(scope, receive, send):
@@ -158,9 +188,29 @@ class Gateway:
         return _BearerAuth(app, self.shadow.config.token)
 
     async def _list_tools(self) -> list[types.Tool]:
+        self._track_session()
         return self.tool_list()
 
+    async def _push_loop(self) -> None:
+        cursor = self.shadow.events.since(None)[1]
+        while not self._stop:
+            events, cursor = await self.shadow.events.wait(cursor, 25)
+            for event in events:
+                await self._push(event)
+
+    async def _push(self, event: Event) -> None:
+        notification = _Notification(
+            method=f"notifications/shadownet/{event.event}",
+            params={**event.data, "eventId": event.event_id},
+        )
+        for session in list(self._sessions):
+            try:
+                await session.send_notification(notification)
+            except Exception:
+                self._sessions.discard(session)
+
     async def serve(self) -> None:
+        self._pump = asyncio.get_running_loop().create_task(self._push_loop())
         self._server = uvicorn.Server(
             uvicorn.Config(
                 self.build_app(),
@@ -172,5 +222,8 @@ class Gateway:
         await self._server.serve()
 
     def stop(self) -> None:
+        self._stop = True
+        if self._pump is not None:
+            self._pump.cancel()
         if self._server is not None:
             self._server.should_exit = True

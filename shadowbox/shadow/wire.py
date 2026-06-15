@@ -144,6 +144,15 @@ class Wire:
                 route,
                 envelope.body,
             )
+            data = {
+                "messageId": envelope.message_id,
+                "contextId": envelope.context_id,
+                "from": envelope.sender,
+                "status": route,
+            }
+            if envelope.body.get("intent"):
+                data["intent"] = envelope.body["intent"]
+            self.shadow.events.emit("inbox.message", data)
         except WireError as exc:
             return self._problem(exc)
         return JSONResponse(

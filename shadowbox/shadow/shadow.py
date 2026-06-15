@@ -9,6 +9,7 @@ from shadowbox.crypto import PublicKey, SigningKey
 from shadowbox.data.contacts import ContactStore, SqliteContactStore
 from shadowbox.data.credential import CredentialStore, SqliteCredentialStore
 from shadowbox.data.directives import DirectiveStore, SqliteDirectiveStore
+from shadowbox.data.events import EventStore, SqliteEventStore
 from shadowbox.data.messages import MessageStore, SqliteMessageStore
 from shadowbox.shadow.agent import Agent
 from shadowbox.shadow.gateway import Gateway
@@ -35,6 +36,7 @@ class Shadow:
         self._directives: DirectiveStore | None = None
         self._messages: MessageStore | None = None
         self._credentials: CredentialStore | None = None
+        self._events: EventStore | None = None
         self._trust: TrustConfig | None = None
         self._gateway: Gateway | None = None
         self._agent: Agent | None = None
@@ -91,6 +93,12 @@ class Shadow:
         return self._credentials
 
     @property
+    def events(self) -> EventStore:
+        if self._events is None:
+            self._events = SqliteEventStore(self.settings, self.name)
+        return self._events
+
+    @property
     def trust(self) -> TrustConfig:
         if self._trust is None:
             self._trust = (
@@ -119,6 +127,8 @@ class Shadow:
         return self._wire
 
     def close(self) -> None:
+        if self._agent is not None:
+            self._agent.kill()
         for component in (self._gateway, self._wire):
             if component is not None:
                 component.stop()
@@ -127,8 +137,9 @@ class Shadow:
             self._directives,
             self._messages,
             self._credentials,
+            self._events,
         ):
             if store is not None:
                 store.close()
         self._contacts = self._directives = self._messages = None
-        self._credentials = None
+        self._credentials = self._events = None

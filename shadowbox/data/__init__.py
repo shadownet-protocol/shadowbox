@@ -13,6 +13,7 @@ from shadowbox.data.credential import (
 )
 from shadowbox.data.directives import DirectiveStore, SqliteDirectiveStore
 from shadowbox.data.envelope import URN, Envelope, WireError
+from shadowbox.data.events import EventStore, SqliteEventStore
 from shadowbox.data.messages import MessageStore, SqliteMessageStore
 
 __all__ = [
@@ -23,10 +24,12 @@ __all__ = [
     "CredentialStore",
     "DirectiveStore",
     "Envelope",
+    "EventStore",
     "MessageStore",
     "SqliteContactStore",
     "SqliteCredentialStore",
     "SqliteDirectiveStore",
+    "SqliteEventStore",
     "SqliteMessageStore",
     "ToolError",
     "WireError",

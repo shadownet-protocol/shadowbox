@@ -305,6 +305,7 @@ class ShadowboxApp(App):
     BINDINGS = [
         ("q", "quit", "quit"),
         ("n", "new_shadow", "new shadow"),
+        ("s", "toggle_agent", "host LLM"),
         ("r", "reinit", "reinitialize"),
     ]
 
@@ -372,9 +373,11 @@ class ShadowboxApp(App):
                 if v is not None
             )
             mark = "●" if self.orchestrator.running(shadow.name) else "○"
-            detail = f"mcp :{shadow.config.mcp_port} {mark}" + (
-                f"  {extras}" if extras else ""
-            )
+            detail = f"mcp :{shadow.config.mcp_port} {mark}"
+            if shadow.config.provider is not None:
+                detail += f"  llm:{self.orchestrator.agent_status(shadow.name)}"
+            if extras:
+                detail += f"  {extras}"
             item = ListItem(
                 Label(f"[b]{shadow.name}[/b]  {shadow.uri}  [dim]{detail}[/dim]")
             )
@@ -384,6 +387,26 @@ class ShadowboxApp(App):
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         self.push_screen(ContactsScreen(self.orchestrator.get(event.item.shadow_name)))
+
+    @work
+    async def action_toggle_agent(self) -> None:
+        item = self.query_one(ListView).highlighted_child
+        if item is None:
+            return
+        name = item.shadow_name
+        if self.orchestrator.get(name).config.provider is None:
+            self.notify("no host LLM configured for this shadow", severity="warning")
+            return
+        try:
+            if self.orchestrator.agent_status(name) == "running":
+                await self.orchestrator.stop_agent(name)
+                self.notify(f"{name} host LLM stopped")
+            else:
+                await self.orchestrator.start_agent(name)
+                self.notify(f"{name} host LLM started")
+        except RuntimeError as exc:
+            self.notify(str(exc), severity="error")
+        self._load_shadows()
 
     @work
     async def action_new_shadow(self) -> None:

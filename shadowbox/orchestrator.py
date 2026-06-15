@@ -151,6 +151,15 @@ class Orchestrator:
         self._running.clear()
         self._tasks.clear()
 
+    async def start_agent(self, name: str) -> None:
+        await self.get(name).agent.start()
+
+    async def stop_agent(self, name: str) -> None:
+        await self.get(name).agent.stop()
+
+    def agent_status(self, name: str) -> str:
+        return self.get(name).agent.status()
+
     async def wait(self) -> None:
         if self._tasks:
             await asyncio.gather(*self._tasks)

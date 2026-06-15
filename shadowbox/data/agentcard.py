@@ -10,13 +10,10 @@ class AgentCard:
     def build(cls, pk: str, url: str) -> "AgentCard":
         return cls(
             {
-                "protocolVersion": "0.3.0",
                 "name": pk,
                 "description": "Shadownet Shadow",
                 "version": "0.2.0",
-                "url": url,
-                "preferredTransport": "JSONRPC",
-                "supportedInterfaces": [{"url": url, "transport": "JSONRPC"}],
+                "supportedInterfaces": [{"url": url, "protocolBinding": "JSONRPC"}],
                 "capabilities": {
                     "extensions": [
                         {
@@ -43,7 +40,7 @@ class AgentCard:
 
     @property
     def url(self) -> str:
-        return self.data["url"]
+        return self.data["supportedInterfaces"][0]["url"]
 
     def sign(self, key: SigningKey) -> "AgentCard":
         protected_b64 = Jws.b64url_encode(Jcs.encode({"alg": "EdDSA", "kid": self.pk}))
