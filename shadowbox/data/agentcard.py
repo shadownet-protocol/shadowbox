@@ -1,6 +1,7 @@
 from shadowbox.crypto import Jcs, Jws, PublicKey, SigningKey
 from shadowbox.data.envelope import URN
 
+
 class AgentCard:
     def __init__(self, data: dict):
         self.data = data

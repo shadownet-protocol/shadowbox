@@ -22,10 +22,10 @@ from shadowbox.config import (
     load_personas,
     load_secrets,
 )
-from shadowbox.contacts import ToolError
-from shadowbox.lab import Lab, LabError, Shadow
+from shadowbox.data.contacts import ToolError
 from shadowbox.models import AddContactInput, ContactProfile
-from shadowbox.sidecar import SidecarFleet
+from shadowbox.orchestrator import Orchestrator, OrchestratorError
+from shadowbox.shadow import Shadow
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -210,14 +210,11 @@ class ContactsScreen(Screen):
 
     def on_mount(self) -> None:
         self.app.sub_title = f"{self.shadow.name} — contacts"
-        self.store = self.shadow.contacts()
+        self.store = self.shadow.contacts
         table = self.query_one(DataTable)
         table.add_columns("contact", "display name", "grants")
         self._reload()
         table.focus()
-
-    def on_unmount(self) -> None:
-        self.store.close()
 
     def _reload(self) -> None:
         table = self.query_one(DataTable)
@@ -313,8 +310,7 @@ class ShadowboxApp(App):
 
     def __init__(self):
         super().__init__()
-        self.lab = Lab()
-        self.fleet = SidecarFleet(self.lab)
+        self.orchestrator = Orchestrator()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -326,12 +322,12 @@ class ShadowboxApp(App):
 
     @work
     async def _start(self) -> None:
-        st, reason = self.lab.state()
+        st, reason = self.orchestrator.state()
         if st == "fresh":
             ok = await self.push_screen_wait(
                 ConfirmScreen(
                     "shadowbox is not initialized.",
-                    self.lab.plan(),
+                    self.orchestrator.plan(),
                     "Initialize",
                     variant="success",
                     cancel_label="Quit",
@@ -340,11 +336,11 @@ class ShadowboxApp(App):
             if not ok:
                 self.exit()
                 return
-            self.lab.initialize()
+            self.orchestrator.initialize()
         elif st == "broken":
             ok = await self.push_screen_wait(
                 ConfirmScreen(
-                    f"state at {self.lab.settings.home_dir} is broken: {reason}",
+                    f"state at {self.orchestrator.settings.home_dir} broken: {reason}",
                     [
                         "reinitializing permanently deletes:",
                         "  keys/  (identities are unrecoverable)",
@@ -358,24 +354,24 @@ class ShadowboxApp(App):
             if not ok:
                 self.exit()
                 return
-            self.lab.wipe()
-            self.lab.initialize()
-        self.fleet.start_all()
+            self.orchestrator.wipe()
+            self.orchestrator.initialize()
+        self.orchestrator.start_all()
         self._load_shadows()
 
     def on_unmount(self) -> None:
-        self.fleet.stop_all()
+        self.orchestrator.stop_all()
 
     def _load_shadows(self) -> None:
         lv = self.query_one(ListView)
         lv.clear()
-        for shadow in self.lab.shadows():
+        for shadow in self.orchestrator.shadows:
             extras = " / ".join(
                 v
                 for v in (shadow.config.persona, shadow.config.provider)
                 if v is not None
             )
-            mark = "●" if self.fleet.running(shadow.name) else "○"
+            mark = "●" if self.orchestrator.running(shadow.name) else "○"
             detail = f"mcp :{shadow.config.mcp_port} {mark}" + (
                 f"  {extras}" if extras else ""
             )
@@ -387,13 +383,13 @@ class ShadowboxApp(App):
         lv.focus()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.push_screen(ContactsScreen(self.lab.get(event.item.shadow_name)))
+        self.push_screen(ContactsScreen(self.orchestrator.get(event.item.shadow_name)))
 
     @work
     async def action_new_shadow(self) -> None:
         try:
-            personas = load_personas(self.lab.settings).personas
-            secrets = load_secrets(self.lab.settings)
+            personas = load_personas(self.orchestrator.settings).personas
+            secrets = load_secrets(self.orchestrator.settings)
         except FileNotFoundError:
             self.notify("lab not initialized", severity="error")
             return
@@ -403,11 +399,11 @@ class ShadowboxApp(App):
         if result is None:
             return
         try:
-            shadow, lines = self.lab.add_shadow(**result)
-        except LabError as exc:
+            shadow, lines = self.orchestrator.add_shadow(**result)
+        except OrchestratorError as exc:
             self.notify(str(exc), severity="error")
             return
-        self.fleet.start(shadow.name)
+        self.orchestrator.start(shadow.name)
         self._load_shadows()
         self.notify("\n".join(lines), markup=False)
 
@@ -417,7 +413,7 @@ class ShadowboxApp(App):
             ConfirmScreen(
                 "delete and reinitialize?",
                 [
-                    f"permanently deletes from {self.lab.settings.home_dir}:",
+                    f"permanently deletes from {self.orchestrator.settings.home_dir}:",
                     "  keys/  (identities are unrecoverable)",
                     "  config.yaml, shadowbox.db, hermes/",
                     "personas.yaml and secrets.yaml are kept",
@@ -427,10 +423,10 @@ class ShadowboxApp(App):
         )
         if not ok:
             return
-        self.fleet.stop_all()
-        self.lab.wipe()
-        self.lab.initialize()
-        self.fleet.start_all()
+        self.orchestrator.stop_all()
+        self.orchestrator.wipe()
+        self.orchestrator.initialize()
+        self.orchestrator.start_all()
         self._load_shadows()
         self.notify("reinitialized")
 
