@@ -7,10 +7,10 @@ class AgentCard:
         self.data = data
 
     @classmethod
-    def build(cls, pk: str, url: str) -> "AgentCard":
+    def build(cls, pk: str, url: str, name: str) -> "AgentCard":
         return cls(
             {
-                "name": pk,
+                "name": name,
                 "description": "Shadownet Shadow",
                 "version": "0.2.0",
                 "supportedInterfaces": [{"url": url, "protocolBinding": "JSONRPC"}],

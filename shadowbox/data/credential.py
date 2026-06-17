@@ -9,10 +9,10 @@ MAX_LIFETIME = {"org_affiliation": 30 * 86400}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS credentials (
-    persona TEXT NOT NULL,
+    shadow TEXT NOT NULL,
     token TEXT NOT NULL,
     exp INTEGER NOT NULL,
-    PRIMARY KEY (persona, token)
+    PRIMARY KEY (shadow, token)
 )
 """
 
@@ -88,7 +88,7 @@ def satisfies(
 
 
 class CredentialStore(ABC):
-    persona: str
+    shadow: str
 
     @abstractmethod
     def close(self) -> None: ...
@@ -101,8 +101,8 @@ class CredentialStore(ABC):
 
 
 class SqliteCredentialStore(CredentialStore):
-    def __init__(self, settings: Settings, persona: str):
-        self.persona = persona
+    def __init__(self, settings: Settings, shadow: str):
+        self.shadow = shadow
         self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
@@ -113,14 +113,14 @@ class SqliteCredentialStore(CredentialStore):
 
     def add(self, token: str, exp: int) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO credentials (persona, token, exp) VALUES (?, ?, ?)",
-            (self.persona, token, exp),
+            "INSERT OR REPLACE INTO credentials (shadow, token, exp) VALUES (?, ?, ?)",
+            (self.shadow, token, exp),
         )
         self.db.commit()
 
     def valid_tokens(self, now: int) -> list[str]:
         rows = self.db.execute(
-            "SELECT token FROM credentials WHERE persona = ? AND exp > ?",
-            (self.persona, now - 60),
+            "SELECT token FROM credentials WHERE shadow = ? AND exp > ?",
+            (self.shadow, now - 60),
         ).fetchall()
         return [r["token"] for r in rows]

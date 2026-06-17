@@ -17,18 +17,18 @@ from shadowbox.models import (
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS directives (
-    persona TEXT NOT NULL,
+    shadow TEXT NOT NULL,
     scope TEXT NOT NULL,
     ref TEXT NOT NULL DEFAULT '',
     items TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (persona, scope, ref)
+    PRIMARY KEY (shadow, scope, ref)
 )
 """
 
 
 class DirectiveStore(ABC):
-    persona: str
+    shadow: str
 
     @abstractmethod
     def close(self) -> None: ...
@@ -43,8 +43,8 @@ class DirectiveStore(ABC):
 
 
 class SqliteDirectiveStore(DirectiveStore):
-    def __init__(self, settings: Settings, persona: str):
-        self.persona = persona
+    def __init__(self, settings: Settings, shadow: str):
+        self.shadow = shadow
         self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(CONTACTS_SCHEMA)
@@ -72,8 +72,8 @@ class SqliteDirectiveStore(DirectiveStore):
 
     def _layer(self, scope: str, ref: str) -> DirectiveLayer | None:
         row = self.db.execute(
-            "SELECT * FROM directives WHERE persona = ? AND scope = ? AND ref = ?",
-            (self.persona, scope, ref),
+            "SELECT * FROM directives WHERE shadow = ? AND scope = ? AND ref = ?",
+            (self.shadow, scope, ref),
         ).fetchone()
         if row is None:
             return None
@@ -115,8 +115,8 @@ class SqliteDirectiveStore(DirectiveStore):
             except ValueError:
                 raise ToolError("not_contact") from None
             known = self.db.execute(
-                "SELECT 1 FROM contacts WHERE persona = ? AND shadowname = ?",
-                (self.persona, ref),
+                "SELECT 1 FROM contacts WHERE shadow = ? AND shadowname = ?",
+                (self.shadow, ref),
             ).fetchone()
             if known is None:
                 raise ToolError("not_contact")
@@ -125,12 +125,12 @@ class SqliteDirectiveStore(DirectiveStore):
 
         if inp.items:
             self.db.execute(
-                "INSERT INTO directives (persona, scope, ref, items, updated_at)"
+                "INSERT INTO directives (shadow, scope, ref, items, updated_at)"
                 " VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(persona, scope, ref) DO UPDATE SET"
+                " ON CONFLICT(shadow, scope, ref) DO UPDATE SET"
                 " items = excluded.items, updated_at = excluded.updated_at",
                 (
-                    self.persona,
+                    self.shadow,
                     inp.scope,
                     ref,
                     json.dumps(
@@ -144,8 +144,8 @@ class SqliteDirectiveStore(DirectiveStore):
             )
         else:
             self.db.execute(
-                "DELETE FROM directives WHERE persona = ? AND scope = ? AND ref = ?",
-                (self.persona, inp.scope, ref),
+                "DELETE FROM directives WHERE shadow = ? AND scope = ? AND ref = ?",
+                (self.shadow, inp.scope, ref),
             )
         self.db.commit()
         return Ok()

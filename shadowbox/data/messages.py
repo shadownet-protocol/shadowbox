@@ -16,7 +16,7 @@ from shadowbox.models import (
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
-    persona TEXT NOT NULL,
+    shadow TEXT NOT NULL,
     message_id TEXT NOT NULL,
     direction TEXT NOT NULL,
     context_id TEXT NOT NULL,
@@ -25,14 +25,14 @@ CREATE TABLE IF NOT EXISTS messages (
     status TEXT NOT NULL,
     intent TEXT,
     body TEXT NOT NULL,
-    PRIMARY KEY (persona, message_id, direction)
+    PRIMARY KEY (shadow, message_id, direction)
 );
 CREATE TABLE IF NOT EXISTS replay (
-    persona TEXT NOT NULL,
+    shadow TEXT NOT NULL,
     sender TEXT NOT NULL,
     message_id TEXT NOT NULL,
     exp INTEGER NOT NULL,
-    PRIMARY KEY (persona, sender, message_id)
+    PRIMARY KEY (shadow, sender, message_id)
 );
 """
 
@@ -42,7 +42,7 @@ def _now() -> str:
 
 
 class MessageStore(ABC):
-    persona: str
+    shadow: str
 
     @abstractmethod
     def close(self) -> None: ...
@@ -106,8 +106,8 @@ class MessageStore(ABC):
 
 
 class SqliteMessageStore(MessageStore):
-    def __init__(self, settings: Settings, persona: str):
-        self.persona = persona
+    def __init__(self, settings: Settings, shadow: str):
+        self.shadow = shadow
         self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
@@ -120,11 +120,11 @@ class SqliteMessageStore(MessageStore):
         self, message_id: str, context_id: str, peer: str, body: dict
     ) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO messages (persona, message_id, direction,"
+            "INSERT OR REPLACE INTO messages (shadow, message_id, direction,"
             " context_id, peer, occurred_at, status, intent, body)"
             " VALUES (?, ?, 'outbound', ?, ?, ?, 'sending', ?, ?)",
             (
-                self.persona,
+                self.shadow,
                 message_id,
                 context_id,
                 peer,
@@ -137,9 +137,9 @@ class SqliteMessageStore(MessageStore):
 
     def set_status(self, message_id: str, status: str) -> None:
         self.db.execute(
-            "UPDATE messages SET status = ? WHERE persona = ? AND message_id = ?"
+            "UPDATE messages SET status = ? WHERE shadow = ? AND message_id = ?"
             " AND direction = 'outbound'",
-            (status, self.persona, message_id),
+            (status, self.shadow, message_id),
         )
         self.db.commit()
 
@@ -147,11 +147,11 @@ class SqliteMessageStore(MessageStore):
         self, message_id: str, context_id: str, peer: str, status: str, body: dict
     ) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO messages (persona, message_id, direction,"
+            "INSERT OR REPLACE INTO messages (shadow, message_id, direction,"
             " context_id, peer, occurred_at, status, intent, body)"
             " VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?)",
             (
-                self.persona,
+                self.shadow,
                 message_id,
                 context_id,
                 peer,
@@ -168,33 +168,33 @@ class SqliteMessageStore(MessageStore):
             timespec="seconds"
         )
         row = self.db.execute(
-            "SELECT 1 FROM messages WHERE persona = ? AND direction = 'outbound'"
+            "SELECT 1 FROM messages WHERE shadow = ? AND direction = 'outbound'"
             " AND peer = ? AND context_id = ? AND occurred_at >= ? LIMIT 1",
-            (self.persona, peer, context_id, cutoff),
+            (self.shadow, peer, context_id, cutoff),
         ).fetchone()
         return row is not None
 
     def graduate(self, peer: str) -> int:
         cur = self.db.execute(
-            "UPDATE messages SET status = 'inbox' WHERE persona = ?"
+            "UPDATE messages SET status = 'inbox' WHERE shadow = ?"
             " AND direction = 'inbound' AND peer = ? AND status = 'stranger_review'",
-            (self.persona, peer),
+            (self.shadow, peer),
         )
         self.db.commit()
         return cur.rowcount
 
     def seen(self, sender: str, message_id: str) -> bool:
         row = self.db.execute(
-            "SELECT 1 FROM replay WHERE persona = ? AND sender = ? AND message_id = ?",
-            (self.persona, sender, message_id),
+            "SELECT 1 FROM replay WHERE shadow = ? AND sender = ? AND message_id = ?",
+            (self.shadow, sender, message_id),
         ).fetchone()
         return row is not None
 
     def remember(self, sender: str, message_id: str, exp: int) -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO replay (persona, sender, message_id, exp)"
+            "INSERT OR IGNORE INTO replay (shadow, sender, message_id, exp)"
             " VALUES (?, ?, ?, ?)",
-            (self.persona, sender, message_id, exp),
+            (self.shadow, sender, message_id, exp),
         )
         self.db.commit()
 
@@ -211,11 +211,11 @@ class SqliteMessageStore(MessageStore):
     ) -> InboxResult:
         statuses = ["inbox", "stranger_review"] if include_review else ["inbox"]
         clauses = [
-            "persona = ?",
+            "shadow = ?",
             "direction = 'inbound'",
             f"status IN ({','.join('?' for _ in statuses)})",
         ]
-        params: list = [self.persona, *statuses]
+        params: list = [self.shadow, *statuses]
         if since:
             clauses.append("occurred_at > ?")
             params.append(since)
@@ -252,8 +252,8 @@ class SqliteMessageStore(MessageStore):
         since: str | None = None,
         limit: int = 50,
     ) -> ContextsResult:
-        clauses = ["persona = ?"]
-        params: list = [self.persona]
+        clauses = ["shadow = ?"]
+        params: list = [self.shadow]
         if not include_review:
             clauses.append("NOT (direction = 'inbound' AND status = 'stranger_review')")
         if contact:
@@ -295,8 +295,8 @@ class SqliteMessageStore(MessageStore):
         before: str | None = None,
         limit: int = 50,
     ) -> HistoryResult:
-        clauses = ["persona = ?"]
-        params: list = [self.persona]
+        clauses = ["shadow = ?"]
+        params: list = [self.shadow]
         if not include_review:
             clauses.append("NOT (direction = 'inbound' AND status = 'stranger_review')")
         if context_id:

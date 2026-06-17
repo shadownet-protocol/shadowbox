@@ -210,6 +210,7 @@ class Gateway:
                 self._sessions.discard(session)
 
     async def serve(self) -> None:
+        self._stop = False
         self._pump = asyncio.get_running_loop().create_task(self._push_loop())
         self._server = uvicorn.Server(
             uvicorn.Config(

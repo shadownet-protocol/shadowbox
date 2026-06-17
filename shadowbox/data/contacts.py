@@ -20,7 +20,7 @@ KNOWN_GRANTS = {"messaging"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
-    persona TEXT NOT NULL,
+    shadow TEXT NOT NULL,
     shadowname TEXT NOT NULL,
     display_name TEXT,
     pk TEXT NOT NULL,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     added_at TEXT NOT NULL,
     last_seen TEXT,
     tls_pin TEXT,
-    PRIMARY KEY (persona, shadowname)
+    PRIMARY KEY (shadow, shadowname)
 )
 """
 
@@ -58,7 +58,7 @@ def resolve(name: str) -> ResolveResult:
 
 
 class ContactStore(ABC):
-    persona: str
+    shadow: str
 
     @abstractmethod
     def close(self) -> None: ...
@@ -86,8 +86,8 @@ class ContactStore(ABC):
 
 
 class SqliteContactStore(ContactStore):
-    def __init__(self, settings: Settings, persona: str):
-        self.persona = persona
+    def __init__(self, settings: Settings, shadow: str):
+        self.shadow = shadow
         self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
@@ -108,8 +108,8 @@ class SqliteContactStore(ContactStore):
         except ValueError:
             return None
         return self.db.execute(
-            "SELECT * FROM contacts WHERE persona = ? AND shadowname = ?",
-            (self.persona, wire),
+            "SELECT * FROM contacts WHERE shadow = ? AND shadowname = ?",
+            (self.shadow, wire),
         ).fetchone()
 
     def _insert(
@@ -121,11 +121,11 @@ class SqliteContactStore(ContactStore):
     ) -> None:
         assert addr.public_key is not None and addr.endpoint is not None
         self.db.execute(
-            "INSERT INTO contacts (persona, shadowname, display_name, pk,"
+            "INSERT INTO contacts (shadow, shadowname, display_name, pk,"
             " endpoint, grants, profile, added_at, tls_pin)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                self.persona,
+                self.shadow,
                 addr.wire_name,
                 display_name,
                 addr.public_key.multibase,
@@ -162,8 +162,8 @@ class SqliteContactStore(ContactStore):
 
     def contacts(self, query: str | None = None) -> ContactsResult:
         rows = self.db.execute(
-            "SELECT * FROM contacts WHERE persona = ? ORDER BY added_at",
-            (self.persona,),
+            "SELECT * FROM contacts WHERE shadow = ? ORDER BY added_at",
+            (self.shadow,),
         ).fetchall()
         summaries = [
             ContactSummary(
@@ -214,8 +214,8 @@ class SqliteContactStore(ContactStore):
         grants = set(json.loads(row["grants"]))
         grants.add(grant) if allowed else grants.discard(grant)
         self.db.execute(
-            "UPDATE contacts SET grants = ? WHERE persona = ? AND shadowname = ?",
-            (json.dumps(sorted(grants)), self.persona, row["shadowname"]),
+            "UPDATE contacts SET grants = ? WHERE shadow = ? AND shadowname = ?",
+            (json.dumps(sorted(grants)), self.shadow, row["shadowname"]),
         )
         self.db.commit()
         return Ok()
@@ -223,8 +223,8 @@ class SqliteContactStore(ContactStore):
     def set_contact_profile(self, name: str, profile: ContactProfile) -> Ok:
         row = self._row(name)
         self.db.execute(
-            "UPDATE contacts SET profile = ? WHERE persona = ? AND shadowname = ?",
-            (profile.model_dump_json(by_alias=True), self.persona, row["shadowname"]),
+            "UPDATE contacts SET profile = ? WHERE shadow = ? AND shadowname = ?",
+            (profile.model_dump_json(by_alias=True), self.shadow, row["shadowname"]),
         )
         self.db.commit()
         return Ok()

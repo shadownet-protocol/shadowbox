@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import socket
 import sqlite3
 import time
 from secrets import token_urlsafe
@@ -30,7 +31,18 @@ from shadowbox.data.credential import Credential, SqliteCredentialStore
 from shadowbox.data.envelope import WireError
 from shadowbox.shadow import Shadow
 
-DEFAULT_SHADOWS = [("alice", 7401, 8401), ("bob", 7402, 8402)]
+DEFAULT_SHADOWS = ["alice", "bob"]
+
+
+def free_ports(count: int) -> list[int]:
+    socks = [socket.socket() for _ in range(count)]
+    try:
+        for sock in socks:
+            sock.bind(("127.0.0.1", 0))
+        return [sock.getsockname()[1] for sock in socks]
+    finally:
+        for sock in socks:
+            sock.close()
 
 DEFAULT_TEMPLATES = [
     PersonaTemplate(
@@ -61,8 +73,8 @@ class Orchestrator:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or Settings()
         self._shadows: dict[str, Shadow] | None = None
-        self._running: set[str] = set()
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: dict[str, dict[str, asyncio.Task]] = {}
+        self._log: list[str] = []
 
     def _map(self) -> dict[str, Shadow]:
         if self._shadows is None:
@@ -77,7 +89,7 @@ class Orchestrator:
             for shadow in self._shadows.values():
                 shadow.close()
         self._shadows = None
-        self._running.clear()
+        self._tasks.clear()
 
     @property
     def shadows(self) -> list[Shadow]:
@@ -129,27 +141,72 @@ class Orchestrator:
             raise WireError("signature", 401) from None
         return recipient_pk, card.url
 
+    def log(self, line: str) -> None:
+        self._log.append(line)
+
+    def drain_log(self) -> list[str]:
+        lines = self._log[:]
+        self._log.clear()
+        return lines
+
     def running(self, name: str) -> bool:
-        return name in self._running
+        return name in self._tasks
+
+    def subsystems(self, name: str) -> dict:
+        tasks = self._tasks.get(name, {})
+
+        def live(key: str) -> bool:
+            task = tasks.get(key)
+            return task is not None and not task.done()
+
+        shadow = self.get(name)
+        agent = shadow.agent.status() if shadow.config.provider else None
+        return {"gateway": live("gateway"), "a2a": live("a2a"), "agent": agent}
 
     def start(self, name: str) -> None:
-        if name in self._running:
+        if name in self._tasks:
             return
         shadow = self.get(name)
         loop = asyncio.get_running_loop()
-        self._tasks.append(loop.create_task(shadow.gateway.serve()))
-        self._tasks.append(loop.create_task(shadow.wire.serve()))
-        self._running.add(name)
+        self._tasks[name] = {
+            "gateway": loop.create_task(shadow.gateway.serve()),
+            "a2a": loop.create_task(shadow.wire.serve()),
+        }
+        self.log(
+            f"{name} gateway :{shadow.config.mcp_port} + a2a :{shadow.config.port} up"
+        )
 
     def start_all(self) -> None:
         for shadow in self.shadows:
             self.start(shadow.name)
 
+    async def up(self, name: str) -> None:
+        self.start(name)
+        shadow = self.get(name)
+        if shadow.config.provider is not None:
+            try:
+                await shadow.agent.start()
+                self.log(f"{name} host LLM up")
+            except RuntimeError as exc:
+                self.log(f"{name} host LLM failed: {exc}")
+
+    async def down(self, name: str) -> None:
+        shadow = self.get(name)
+        for task in self._tasks.pop(name, {}).values():
+            task.cancel()
+        shadow.gateway.stop()
+        shadow.wire.stop()
+        if shadow.config.provider is not None:
+            await shadow.agent.stop()
+        self.log(f"{name} down")
+
     def stop_all(self) -> None:
+        for tasks in self._tasks.values():
+            for task in tasks.values():
+                task.cancel()
+        self._tasks.clear()
         for shadow in self.shadows:
             shadow.close()
-        self._running.clear()
-        self._tasks.clear()
 
     async def start_agent(self, name: str) -> None:
         await self.get(name).agent.start()
@@ -161,8 +218,9 @@ class Orchestrator:
         return self.get(name).agent.status()
 
     async def wait(self) -> None:
-        if self._tasks:
-            await asyncio.gather(*self._tasks)
+        tasks = [t for subsystems in self._tasks.values() for t in subsystems.values()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def state(self) -> tuple[str, str]:
         s = self.settings
@@ -191,12 +249,11 @@ class Orchestrator:
     def plan(self) -> list[str]:
         s = self.settings
         lines = [f"create at {s.home_dir}:"]
-        for name, port, mcp_port in DEFAULT_SHADOWS:
-            lines.append(
-                f"  keys/{name}.pem  (new Ed25519 identity,"
-                f" wire :{port}, mcp :{mcp_port})"
-            )
-        lines.append(f"  config.yaml  ({len(DEFAULT_SHADOWS)} shadows)")
+        for name in DEFAULT_SHADOWS:
+            lines.append(f"  keys/{name}.pem  (new Ed25519 identity)")
+        lines.append(
+            f"  config.yaml  ({len(DEFAULT_SHADOWS)} shadows, ports auto-assigned)"
+        )
         lines.append("  keys/lab-issuer.pem + trust.yaml  (stranger-review issuer)")
         lines.append("  shadowbox.db")
         if not s.personas_file.exists():
@@ -224,12 +281,14 @@ class Orchestrator:
         )
         lines.append(f"wrote {s.trust_file} (lab issuer {issuer.multibase[:16]}…)")
 
+        ports = free_ports(2 * len(DEFAULT_SHADOWS))
         shadows: list[ShadowConfig] = []
         keys: dict[str, SigningKey] = {}
-        for name, port, mcp_port in DEFAULT_SHADOWS:
+        for i, name in enumerate(DEFAULT_SHADOWS):
             key = SigningKey.generate()
             key.save(s.keys_dir / f"{name}.pem")
             keys[name] = key
+            port, mcp_port = ports[2 * i], ports[2 * i + 1]
             shadows.append(
                 ShadowConfig(
                     name=name, port=port, mcp_port=mcp_port, token=token_urlsafe(16)
@@ -305,10 +364,11 @@ class Orchestrator:
         if (template or telegram_cred) and provider_cred is None:
             raise OrchestratorError("persona/telegram require a provider")
 
+        port, mcp_port = free_ports(2)
         shadow_config = ShadowConfig(
             name=name,
-            port=max((sh.port for sh in config.shadows), default=7400) + 1,
-            mcp_port=max((sh.mcp_port for sh in config.shadows), default=8400) + 1,
+            port=port,
+            mcp_port=mcp_port,
             token=token_urlsafe(16),
             persona=persona,
             provider=provider,
@@ -326,6 +386,38 @@ class Orchestrator:
         if provider_cred is not None:
             lines += shadow.agent.generate(provider_cred, template, telegram_cred)
         return shadow, lines
+
+    async def remove_shadow(self, name: str) -> None:
+        s = self.settings
+        config = load_config(s)
+        if not any(sh.name == name for sh in config.shadows):
+            raise OrchestratorError(f"no shadow named {name}")
+        await self.down(name)
+        db = sqlite3.connect(s.db_file)
+        for table in (
+            "contacts",
+            "directives",
+            "messages",
+            "replay",
+            "credentials",
+            "events",
+        ):
+            try:
+                db.execute(f"DELETE FROM {table} WHERE shadow = ?", (name,))
+            except sqlite3.OperationalError:
+                pass
+        db.commit()
+        db.close()
+        key_file = s.keys_dir / f"{name}.pem"
+        if key_file.exists():
+            key_file.unlink()
+        hermes_home = s.hermes_dir / name
+        if hermes_home.exists():
+            shutil.rmtree(hermes_home)
+        config.shadows = [sh for sh in config.shadows if sh.name != name]
+        save_config(s, config)
+        self.log(f"{name} removed")
+        self._invalidate()
 
 
 def main() -> None:

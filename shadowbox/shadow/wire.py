@@ -117,9 +117,9 @@ class Wire:
         )
 
     async def _agent_card(self, _request: Request) -> Response:
-        card = AgentCard.build(self.shadow.public_key.multibase, self.url).sign(
-            self.shadow.signing_key
-        )
+        card = AgentCard.build(
+            self.shadow.public_key.multibase, self.url, self.shadow.name
+        ).sign(self.shadow.signing_key)
         return JSONResponse(card.to_dict(), media_type="application/a2a+json")
 
     async def _receive(self, request: Request) -> Response:
