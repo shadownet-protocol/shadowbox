@@ -35,7 +35,7 @@ class Wire:
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.shadow.config.port}"
+        return f"http://127.0.0.1:{self.shadow.port}"
 
     async def send(
         self, to: str, body: dict, context_id: str | None = None
@@ -205,7 +205,7 @@ class Wire:
             uvicorn.Config(
                 self.build_app(),
                 host="127.0.0.1",
-                port=self.shadow.config.port,
+                port=self.shadow.port,
                 log_level="warning",
             )
         )

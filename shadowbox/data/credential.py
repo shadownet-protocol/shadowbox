@@ -1,7 +1,8 @@
 import sqlite3
 from abc import ABC, abstractmethod
+from pathlib import Path
 
-from shadowbox.config import Settings, TrustConfig
+from shadowbox.config import TrustConfig
 from shadowbox.crypto import Jws, PublicKey, SigningKey
 
 CRED_TYP = "shadownet-cred+jwt"
@@ -9,10 +10,8 @@ MAX_LIFETIME = {"org_affiliation": 30 * 86400}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS credentials (
-    shadow TEXT NOT NULL,
-    token TEXT NOT NULL,
-    exp INTEGER NOT NULL,
-    PRIMARY KEY (shadow, token)
+    token TEXT PRIMARY KEY,
+    exp INTEGER NOT NULL
 )
 """
 
@@ -88,8 +87,6 @@ def satisfies(
 
 
 class CredentialStore(ABC):
-    shadow: str
-
     @abstractmethod
     def close(self) -> None: ...
 
@@ -101,9 +98,8 @@ class CredentialStore(ABC):
 
 
 class SqliteCredentialStore(CredentialStore):
-    def __init__(self, settings: Settings, shadow: str):
-        self.shadow = shadow
-        self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
+    def __init__(self, db_path: Path):
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
         self.db.commit()
@@ -113,14 +109,13 @@ class SqliteCredentialStore(CredentialStore):
 
     def add(self, token: str, exp: int) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO credentials (shadow, token, exp) VALUES (?, ?, ?)",
-            (self.shadow, token, exp),
+            "INSERT OR REPLACE INTO credentials (token, exp) VALUES (?, ?)",
+            (token, exp),
         )
         self.db.commit()
 
     def valid_tokens(self, now: int) -> list[str]:
         rows = self.db.execute(
-            "SELECT token FROM credentials WHERE shadow = ? AND exp > ?",
-            (self.shadow, now - 60),
+            "SELECT token FROM credentials WHERE exp > ?", (now - 60,)
         ).fetchall()
         return [r["token"] for r in rows]

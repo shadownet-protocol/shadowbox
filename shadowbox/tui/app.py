@@ -18,7 +18,7 @@ def lamp(up: bool) -> str:
 
 def agent_lamp(status: str | None) -> str:
     if status is None:
-        return "[dim]–[/]"
+        return "[dim]·[/]"
     return "[green]●[/]" if status == "running" else "[red]○[/]"
 
 
@@ -115,7 +115,7 @@ class ShadowboxApp(App):
         lv.clear()
         for shadow in self.orchestrator.shadows:
             sub = self.orchestrator.subsystems(shadow.name)
-            item = ListItem(Label(row_markup(shadow.name, sub, shadow.config.persona)))
+            item = ListItem(Label(row_markup(shadow.name, sub, shadow.persona)))
             item.shadow_name = shadow.name
             lv.append(item)
         if lv.children:
@@ -129,7 +129,7 @@ class ShadowboxApp(App):
             if name is None:
                 continue
             sub = self.orchestrator.subsystems(name)
-            persona = self.orchestrator.get(name).config.persona
+            persona = self.orchestrator.get(name).persona
             item.query_one(Label).update(row_markup(name, sub, persona))
 
     def _show_details(self, name: str | None) -> None:
@@ -139,7 +139,6 @@ class ShadowboxApp(App):
             return
         shadow = self.orchestrator.get(name)
         sub = self.orchestrator.subsystems(name)
-        c = shadow.config
         contacts = len(shadow.contacts.contacts().contacts)
         reviews = len(
             [
@@ -151,8 +150,8 @@ class ShadowboxApp(App):
         gw = "mcp✓ sse✓" if sub["gateway"] else "down"
         details.update(
             f"[b]{name}[/b]\n"
-            f"gateway :{c.mcp_port}  {gw}\n"
-            f"a2a     :{c.port}  {'up' if sub['a2a'] else 'down'}\n"
+            f"gateway :{shadow.mcp_port}  {gw}\n"
+            f"a2a     :{shadow.port}  {'up' if sub['a2a'] else 'down'}\n"
             f"agent   {sub['agent'] or 'n/a'}\n"
             f"key     {shadow.public_key.multibase[:16]}…\n"
             f"{contacts} contacts · {reviews} review"

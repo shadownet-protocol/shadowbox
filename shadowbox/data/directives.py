@@ -2,9 +2,9 @@ import json
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
+from pathlib import Path
 
 from shadowbox.address import Address
-from shadowbox.config import Settings
 from shadowbox.data.contacts import SCHEMA as CONTACTS_SCHEMA
 from shadowbox.data.contacts import ToolError
 from shadowbox.models import (
@@ -17,19 +17,16 @@ from shadowbox.models import (
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS directives (
-    shadow TEXT NOT NULL,
     scope TEXT NOT NULL,
     ref TEXT NOT NULL DEFAULT '',
     items TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (shadow, scope, ref)
+    PRIMARY KEY (scope, ref)
 )
 """
 
 
 class DirectiveStore(ABC):
-    shadow: str
-
     @abstractmethod
     def close(self) -> None: ...
 
@@ -43,9 +40,8 @@ class DirectiveStore(ABC):
 
 
 class SqliteDirectiveStore(DirectiveStore):
-    def __init__(self, settings: Settings, shadow: str):
-        self.shadow = shadow
-        self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
+    def __init__(self, db_path: Path):
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(CONTACTS_SCHEMA)
         self.db.execute(SCHEMA)
@@ -72,8 +68,7 @@ class SqliteDirectiveStore(DirectiveStore):
 
     def _layer(self, scope: str, ref: str) -> DirectiveLayer | None:
         row = self.db.execute(
-            "SELECT * FROM directives WHERE shadow = ? AND scope = ? AND ref = ?",
-            (self.shadow, scope, ref),
+            "SELECT * FROM directives WHERE scope = ? AND ref = ?", (scope, ref)
         ).fetchone()
         if row is None:
             return None
@@ -115,8 +110,7 @@ class SqliteDirectiveStore(DirectiveStore):
             except ValueError:
                 raise ToolError("not_contact") from None
             known = self.db.execute(
-                "SELECT 1 FROM contacts WHERE shadow = ? AND shadowname = ?",
-                (self.shadow, ref),
+                "SELECT 1 FROM contacts WHERE shadowname = ?", (ref,)
             ).fetchone()
             if known is None:
                 raise ToolError("not_contact")
@@ -125,12 +119,11 @@ class SqliteDirectiveStore(DirectiveStore):
 
         if inp.items:
             self.db.execute(
-                "INSERT INTO directives (shadow, scope, ref, items, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(shadow, scope, ref) DO UPDATE SET"
+                "INSERT INTO directives (scope, ref, items, updated_at)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(scope, ref) DO UPDATE SET"
                 " items = excluded.items, updated_at = excluded.updated_at",
                 (
-                    self.shadow,
                     inp.scope,
                     ref,
                     json.dumps(
@@ -144,8 +137,8 @@ class SqliteDirectiveStore(DirectiveStore):
             )
         else:
             self.db.execute(
-                "DELETE FROM directives WHERE shadow = ? AND scope = ? AND ref = ?",
-                (self.shadow, inp.scope, ref),
+                "DELETE FROM directives WHERE scope = ? AND ref = ?",
+                (inp.scope, ref),
             )
         self.db.commit()
         return Ok()

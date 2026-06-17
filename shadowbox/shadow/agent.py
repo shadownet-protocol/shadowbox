@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from shadowbox.config import PersonaTemplate, ProviderCred, TelegramCred
-
 if TYPE_CHECKING:
     from shadowbox.shadow.shadow import Shadow
 
@@ -30,7 +28,7 @@ class Agent:
 
     @property
     def home(self) -> Path:
-        return self.shadow.settings.hermes_dir / self.shadow.name
+        return self.shadow.hermes_home
 
     @property
     def dot(self) -> Path:
@@ -47,38 +45,40 @@ class Agent:
     def launch_command(self) -> str:
         return f"HOME={self.home} uv run hermes"
 
-    def generate(
-        self,
-        provider: ProviderCred,
-        persona: PersonaTemplate | None = None,
-        telegram: TelegramCred | None = None,
-    ) -> list[str]:
+    def generate(self) -> list[str]:
+        cfg = self.shadow.agent_config
+        if cfg is None:
+            return []
         self.dot.mkdir(parents=True, exist_ok=True)
         config: dict = {
-            "model": {"default": provider.model, "provider": provider.kind},
+            "model": {"default": cfg.provider.model, "provider": cfg.provider.kind},
             "mcp_servers": {
                 "shadownet": {
-                    "url": f"http://127.0.0.1:{self.shadow.config.mcp_port}/mcp",
-                    "headers": {"Authorization": f"Bearer {self.shadow.config.token}"},
+                    "url": f"http://127.0.0.1:{self.shadow.mcp_port}/mcp",
+                    "headers": {"Authorization": f"Bearer {self.shadow.token}"},
                 }
             },
         }
-        env = [f"{ENV_KEYS[provider.kind]}={provider.api_key}"]
-        if telegram:
-            env.append(f"TELEGRAM_BOT_TOKEN={telegram.token}")
-            if telegram.allowed_users:
-                env.append("TELEGRAM_ALLOWED_USERS=" + ",".join(telegram.allowed_users))
+        env = [f"{ENV_KEYS[cfg.provider.kind]}={cfg.provider.api_key}"]
+        if cfg.telegram:
+            env.append(f"TELEGRAM_BOT_TOKEN={cfg.telegram.token}")
+            if cfg.telegram.allowed_users:
+                env.append(
+                    "TELEGRAM_ALLOWED_USERS=" + ",".join(cfg.telegram.allowed_users)
+                )
                 config["gateway"] = {
                     "platforms": {
-                        "telegram": {"extra": {"allow_from": telegram.allowed_users}}
+                        "telegram": {
+                            "extra": {"allow_from": cfg.telegram.allowed_users}
+                        }
                     }
                 }
         (self.dot / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
         env_file = self.dot / ".env"
         env_file.write_text("\n".join(env) + "\n")
         env_file.chmod(0o600)
-        if persona:
-            (self.dot / "SOUL.md").write_text(persona.soul)
+        if cfg.soul:
+            (self.dot / "SOUL.md").write_text(cfg.soul)
         return [f"wrote {self.dot}", f"launch: {self.launch_command()}"]
 
     def _command(self) -> list[str] | None:

@@ -2,9 +2,9 @@ import json
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
+from pathlib import Path
 
 from shadowbox.address import Address
-from shadowbox.config import Settings
 from shadowbox.models import (
     AddContactInput,
     AddContactResult,
@@ -20,8 +20,7 @@ KNOWN_GRANTS = {"messaging"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
-    shadow TEXT NOT NULL,
-    shadowname TEXT NOT NULL,
+    shadowname TEXT PRIMARY KEY,
     display_name TEXT,
     pk TEXT NOT NULL,
     endpoint TEXT NOT NULL,
@@ -29,8 +28,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     profile TEXT,
     added_at TEXT NOT NULL,
     last_seen TEXT,
-    tls_pin TEXT,
-    PRIMARY KEY (shadow, shadowname)
+    tls_pin TEXT
 )
 """
 
@@ -58,8 +56,6 @@ def resolve(name: str) -> ResolveResult:
 
 
 class ContactStore(ABC):
-    shadow: str
-
     @abstractmethod
     def close(self) -> None: ...
 
@@ -86,9 +82,8 @@ class ContactStore(ABC):
 
 
 class SqliteContactStore(ContactStore):
-    def __init__(self, settings: Settings, shadow: str):
-        self.shadow = shadow
-        self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
+    def __init__(self, db_path: Path):
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
         self.db.commit()
@@ -108,8 +103,7 @@ class SqliteContactStore(ContactStore):
         except ValueError:
             return None
         return self.db.execute(
-            "SELECT * FROM contacts WHERE shadow = ? AND shadowname = ?",
-            (self.shadow, wire),
+            "SELECT * FROM contacts WHERE shadowname = ?", (wire,)
         ).fetchone()
 
     def _insert(
@@ -121,11 +115,10 @@ class SqliteContactStore(ContactStore):
     ) -> None:
         assert addr.public_key is not None and addr.endpoint is not None
         self.db.execute(
-            "INSERT INTO contacts (shadow, shadowname, display_name, pk,"
-            " endpoint, grants, profile, added_at, tls_pin)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO contacts (shadowname, display_name, pk, endpoint,"
+            " grants, profile, added_at, tls_pin)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                self.shadow,
                 addr.wire_name,
                 display_name,
                 addr.public_key.multibase,
@@ -161,10 +154,7 @@ class SqliteContactStore(ContactStore):
         self.db.commit()
 
     def contacts(self, query: str | None = None) -> ContactsResult:
-        rows = self.db.execute(
-            "SELECT * FROM contacts WHERE shadow = ? ORDER BY added_at",
-            (self.shadow,),
-        ).fetchall()
+        rows = self.db.execute("SELECT * FROM contacts ORDER BY added_at").fetchall()
         summaries = [
             ContactSummary(
                 shadowname=r["shadowname"],
@@ -214,8 +204,8 @@ class SqliteContactStore(ContactStore):
         grants = set(json.loads(row["grants"]))
         grants.add(grant) if allowed else grants.discard(grant)
         self.db.execute(
-            "UPDATE contacts SET grants = ? WHERE shadow = ? AND shadowname = ?",
-            (json.dumps(sorted(grants)), self.shadow, row["shadowname"]),
+            "UPDATE contacts SET grants = ? WHERE shadowname = ?",
+            (json.dumps(sorted(grants)), row["shadowname"]),
         )
         self.db.commit()
         return Ok()
@@ -223,8 +213,8 @@ class SqliteContactStore(ContactStore):
     def set_contact_profile(self, name: str, profile: ContactProfile) -> Ok:
         row = self._row(name)
         self.db.execute(
-            "UPDATE contacts SET profile = ? WHERE shadow = ? AND shadowname = ?",
-            (profile.model_dump_json(by_alias=True), self.shadow, row["shadowname"]),
+            "UPDATE contacts SET profile = ? WHERE shadowname = ?",
+            (profile.model_dump_json(by_alias=True), row["shadowname"]),
         )
         self.db.commit()
         return Ok()

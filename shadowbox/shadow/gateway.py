@@ -185,7 +185,7 @@ class Gateway:
                 yield
 
         app = Starlette(routes=[Mount("/mcp", app=endpoint)], lifespan=lifespan)
-        return _BearerAuth(app, self.shadow.config.token)
+        return _BearerAuth(app, self.shadow.token)
 
     async def _list_tools(self) -> list[types.Tool]:
         self._track_session()
@@ -216,7 +216,7 @@ class Gateway:
             uvicorn.Config(
                 self.build_app(),
                 host="127.0.0.1",
-                port=self.shadow.config.mcp_port,
+                port=self.shadow.mcp_port,
                 log_level="warning",
             )
         )

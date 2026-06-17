@@ -2,8 +2,8 @@ import json
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from shadowbox.config import Settings
 from shadowbox.models import (
     Body,
     Context,
@@ -16,7 +16,6 @@ from shadowbox.models import (
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
-    shadow TEXT NOT NULL,
     message_id TEXT NOT NULL,
     direction TEXT NOT NULL,
     context_id TEXT NOT NULL,
@@ -25,14 +24,13 @@ CREATE TABLE IF NOT EXISTS messages (
     status TEXT NOT NULL,
     intent TEXT,
     body TEXT NOT NULL,
-    PRIMARY KEY (shadow, message_id, direction)
+    PRIMARY KEY (message_id, direction)
 );
 CREATE TABLE IF NOT EXISTS replay (
-    shadow TEXT NOT NULL,
     sender TEXT NOT NULL,
     message_id TEXT NOT NULL,
     exp INTEGER NOT NULL,
-    PRIMARY KEY (shadow, sender, message_id)
+    PRIMARY KEY (sender, message_id)
 );
 """
 
@@ -42,8 +40,6 @@ def _now() -> str:
 
 
 class MessageStore(ABC):
-    shadow: str
-
     @abstractmethod
     def close(self) -> None: ...
 
@@ -106,9 +102,8 @@ class MessageStore(ABC):
 
 
 class SqliteMessageStore(MessageStore):
-    def __init__(self, settings: Settings, shadow: str):
-        self.shadow = shadow
-        self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
+    def __init__(self, db_path: Path):
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self.db.commit()
@@ -120,11 +115,10 @@ class SqliteMessageStore(MessageStore):
         self, message_id: str, context_id: str, peer: str, body: dict
     ) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO messages (shadow, message_id, direction,"
+            "INSERT OR REPLACE INTO messages (message_id, direction,"
             " context_id, peer, occurred_at, status, intent, body)"
-            " VALUES (?, ?, 'outbound', ?, ?, ?, 'sending', ?, ?)",
+            " VALUES (?, 'outbound', ?, ?, ?, 'sending', ?, ?)",
             (
-                self.shadow,
                 message_id,
                 context_id,
                 peer,
@@ -137,9 +131,9 @@ class SqliteMessageStore(MessageStore):
 
     def set_status(self, message_id: str, status: str) -> None:
         self.db.execute(
-            "UPDATE messages SET status = ? WHERE shadow = ? AND message_id = ?"
+            "UPDATE messages SET status = ? WHERE message_id = ?"
             " AND direction = 'outbound'",
-            (status, self.shadow, message_id),
+            (status, message_id),
         )
         self.db.commit()
 
@@ -147,11 +141,10 @@ class SqliteMessageStore(MessageStore):
         self, message_id: str, context_id: str, peer: str, status: str, body: dict
     ) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO messages (shadow, message_id, direction,"
+            "INSERT OR REPLACE INTO messages (message_id, direction,"
             " context_id, peer, occurred_at, status, intent, body)"
-            " VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, 'inbound', ?, ?, ?, ?, ?, ?)",
             (
-                self.shadow,
                 message_id,
                 context_id,
                 peer,
@@ -168,38 +161,40 @@ class SqliteMessageStore(MessageStore):
             timespec="seconds"
         )
         row = self.db.execute(
-            "SELECT 1 FROM messages WHERE shadow = ? AND direction = 'outbound'"
+            "SELECT 1 FROM messages WHERE direction = 'outbound'"
             " AND peer = ? AND context_id = ? AND occurred_at >= ? LIMIT 1",
-            (self.shadow, peer, context_id, cutoff),
+            (peer, context_id, cutoff),
         ).fetchone()
         return row is not None
 
     def graduate(self, peer: str) -> int:
         cur = self.db.execute(
-            "UPDATE messages SET status = 'inbox' WHERE shadow = ?"
-            " AND direction = 'inbound' AND peer = ? AND status = 'stranger_review'",
-            (self.shadow, peer),
+            "UPDATE messages SET status = 'inbox' WHERE direction = 'inbound'"
+            " AND peer = ? AND status = 'stranger_review'",
+            (peer,),
         )
         self.db.commit()
         return cur.rowcount
 
     def seen(self, sender: str, message_id: str) -> bool:
         row = self.db.execute(
-            "SELECT 1 FROM replay WHERE shadow = ? AND sender = ? AND message_id = ?",
-            (self.shadow, sender, message_id),
+            "SELECT 1 FROM replay WHERE sender = ? AND message_id = ?",
+            (sender, message_id),
         ).fetchone()
         return row is not None
 
     def remember(self, sender: str, message_id: str, exp: int) -> None:
         self.db.execute(
-            "INSERT OR IGNORE INTO replay (shadow, sender, message_id, exp)"
-            " VALUES (?, ?, ?, ?)",
-            (self.shadow, sender, message_id, exp),
+            "INSERT OR IGNORE INTO replay (sender, message_id, exp) VALUES (?, ?, ?)",
+            (sender, message_id, exp),
         )
         self.db.commit()
 
     def _body(self, raw: str) -> Body:
         return Body.model_validate(json.loads(raw))
+
+    def _where(self, clauses: list[str]) -> str:
+        return (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
     def inbox(
         self,
@@ -211,11 +206,10 @@ class SqliteMessageStore(MessageStore):
     ) -> InboxResult:
         statuses = ["inbox", "stranger_review"] if include_review else ["inbox"]
         clauses = [
-            "shadow = ?",
             "direction = 'inbound'",
             f"status IN ({','.join('?' for _ in statuses)})",
         ]
-        params: list = [self.shadow, *statuses]
+        params: list = [*statuses]
         if since:
             clauses.append("occurred_at > ?")
             params.append(since)
@@ -227,7 +221,7 @@ class SqliteMessageStore(MessageStore):
             params.append(intent)
         params.append(limit)
         rows = self.db.execute(
-            f"SELECT * FROM messages WHERE {' AND '.join(clauses)}"
+            f"SELECT * FROM messages{self._where(clauses)}"
             " ORDER BY occurred_at ASC LIMIT ?",
             params,
         ).fetchall()
@@ -252,16 +246,15 @@ class SqliteMessageStore(MessageStore):
         since: str | None = None,
         limit: int = 50,
     ) -> ContextsResult:
-        clauses = ["shadow = ?"]
-        params: list = [self.shadow]
+        clauses: list[str] = []
+        params: list = []
         if not include_review:
             clauses.append("NOT (direction = 'inbound' AND status = 'stranger_review')")
         if contact:
             clauses.append("peer = ?")
             params.append(contact)
         rows = self.db.execute(
-            f"SELECT * FROM messages WHERE {' AND '.join(clauses)}"
-            " ORDER BY occurred_at ASC",
+            f"SELECT * FROM messages{self._where(clauses)} ORDER BY occurred_at ASC",
             params,
         ).fetchall()
         by_context: dict[str, list[sqlite3.Row]] = {}
@@ -295,8 +288,8 @@ class SqliteMessageStore(MessageStore):
         before: str | None = None,
         limit: int = 50,
     ) -> HistoryResult:
-        clauses = ["shadow = ?"]
-        params: list = [self.shadow]
+        clauses: list[str] = []
+        params: list = []
         if not include_review:
             clauses.append("NOT (direction = 'inbound' AND status = 'stranger_review')")
         if context_id:
@@ -313,7 +306,7 @@ class SqliteMessageStore(MessageStore):
             params.append(before)
         params.append(limit)
         rows = self.db.execute(
-            f"SELECT * FROM messages WHERE {' AND '.join(clauses)}"
+            f"SELECT * FROM messages{self._where(clauses)}"
             " ORDER BY occurred_at DESC LIMIT ?",
             params,
         ).fetchall()

@@ -1,7 +1,6 @@
 import asyncio
 import shutil
 import socket
-import sqlite3
 import time
 from secrets import token_urlsafe
 
@@ -9,40 +8,31 @@ import httpx
 
 from shadowbox.address import Address
 from shadowbox.config import (
-    Config,
+    IDENTITY_FILE,
+    SIDECAR_FILE,
+    AgentConfig,
     Personas,
     PersonaTemplate,
     Secrets,
     Settings,
-    ShadowConfig,
+    SidecarConfig,
     TrustConfig,
     TrustEntry,
-    load_config,
     load_personas,
     load_secrets,
-    save_config,
+    load_sidecar,
+    save_agent,
     save_personas,
     save_secrets,
-    save_trust,
+    save_sidecar,
 )
 from shadowbox.crypto import SigningKey
 from shadowbox.data.agentcard import AgentCard
-from shadowbox.data.credential import Credential, SqliteCredentialStore
+from shadowbox.data.credential import Credential
 from shadowbox.data.envelope import WireError
 from shadowbox.shadow import Shadow
 
 DEFAULT_SHADOWS = ["alice", "bob"]
-
-
-def free_ports(count: int) -> list[int]:
-    socks = [socket.socket() for _ in range(count)]
-    try:
-        for sock in socks:
-            sock.bind(("127.0.0.1", 0))
-        return [sock.getsockname()[1] for sock in socks]
-    finally:
-        for sock in socks:
-            sock.close()
 
 DEFAULT_TEMPLATES = [
     PersonaTemplate(
@@ -65,6 +55,17 @@ DEFAULT_TEMPLATES = [
 ]
 
 
+def free_ports(count: int) -> list[int]:
+    socks = [socket.socket() for _ in range(count)]
+    try:
+        for sock in socks:
+            sock.bind(("127.0.0.1", 0))
+        return [sock.getsockname()[1] for sock in socks]
+    finally:
+        for sock in socks:
+            sock.close()
+
+
 class OrchestratorError(Exception):
     pass
 
@@ -76,12 +77,24 @@ class Orchestrator:
         self._tasks: dict[str, dict[str, asyncio.Task]] = {}
         self._log: list[str] = []
 
+    def _scan(self) -> dict[str, Shadow]:
+        shadows: dict[str, Shadow] = {}
+        if not self.settings.home_dir.exists():
+            return shadows
+        for directory in sorted(self.settings.home_dir.iterdir()):
+            if not directory.is_dir():
+                continue
+            if not (directory / SIDECAR_FILE).exists():
+                continue
+            if not (directory / IDENTITY_FILE).exists():
+                continue
+            shadow = Shadow(self.settings, directory, self)
+            shadows[shadow.name] = shadow
+        return shadows
+
     def _map(self) -> dict[str, Shadow]:
         if self._shadows is None:
-            self._shadows = {
-                c.name: Shadow(self.settings, c, self)
-                for c in load_config(self.settings).shadows
-            }
+            self._shadows = self._scan()
         return self._shadows
 
     def _invalidate(self) -> None:
@@ -160,8 +173,16 @@ class Orchestrator:
             return task is not None and not task.done()
 
         shadow = self.get(name)
-        agent = shadow.agent.status() if shadow.config.provider else None
+        agent = shadow.agent.status() if shadow.has_agent else None
         return {"gateway": live("gateway"), "a2a": live("a2a"), "agent": agent}
+
+    async def _guard(self, coro, name: str, which: str) -> None:
+        try:
+            await coro
+        except SystemExit:
+            self.log(f"{name} {which} could not bind (port busy)")
+        except Exception as exc:
+            self.log(f"{name} {which} crashed: {exc}")
 
     def start(self, name: str) -> None:
         if name in self._tasks:
@@ -169,12 +190,12 @@ class Orchestrator:
         shadow = self.get(name)
         loop = asyncio.get_running_loop()
         self._tasks[name] = {
-            "gateway": loop.create_task(shadow.gateway.serve()),
-            "a2a": loop.create_task(shadow.wire.serve()),
+            "gateway": loop.create_task(
+                self._guard(shadow.gateway.serve(), name, "gateway")
+            ),
+            "a2a": loop.create_task(self._guard(shadow.wire.serve(), name, "a2a")),
         }
-        self.log(
-            f"{name} gateway :{shadow.config.mcp_port} + a2a :{shadow.config.port} up"
-        )
+        self.log(f"{name} gateway :{shadow.mcp_port} + a2a :{shadow.port} up")
 
     def start_all(self) -> None:
         for shadow in self.shadows:
@@ -183,7 +204,7 @@ class Orchestrator:
     async def up(self, name: str) -> None:
         self.start(name)
         shadow = self.get(name)
-        if shadow.config.provider is not None:
+        if shadow.has_agent:
             try:
                 await shadow.agent.start()
                 self.log(f"{name} host LLM up")
@@ -192,11 +213,12 @@ class Orchestrator:
 
     async def down(self, name: str) -> None:
         shadow = self.get(name)
-        for task in self._tasks.pop(name, {}).values():
-            task.cancel()
         shadow.gateway.stop()
         shadow.wire.stop()
-        if shadow.config.provider is not None:
+        tasks = self._tasks.pop(name, {})
+        if tasks:
+            await asyncio.gather(*tasks.values(), return_exceptions=True)
+        if shadow.has_agent:
             await shadow.agent.stop()
         self.log(f"{name} down")
 
@@ -205,8 +227,9 @@ class Orchestrator:
             for task in tasks.values():
                 task.cancel()
         self._tasks.clear()
-        for shadow in self.shadows:
-            shadow.close()
+        if self._shadows is not None:
+            for shadow in self._shadows.values():
+                shadow.close()
 
     async def start_agent(self, name: str) -> None:
         await self.get(name).agent.start()
@@ -224,113 +247,117 @@ class Orchestrator:
 
     def state(self) -> tuple[str, str]:
         s = self.settings
-        if not any(p.exists() for p in (s.config_file, s.db_file, s.keys_dir)):
+        lab_files = [s.personas_file, s.secrets_file, s.issuer_key_file]
+        if not s.home_dir.exists():
             return "fresh", ""
-        if not s.config_file.exists():
-            return "broken", f"{s.config_file.name} missing"
-        try:
-            config = load_config(s)
-        except Exception as exc:
-            return "broken", f"{s.config_file.name} unreadable: {exc}"
-        for shadow in config.shadows:
-            if not (s.keys_dir / f"{shadow.name}.pem").exists():
-                return "broken", f"keys/{shadow.name}.pem missing"
-        for required in (
-            s.db_file,
-            s.personas_file,
-            s.secrets_file,
-            s.trust_file,
-            s.issuer_key_file,
-        ):
-            if not required.exists():
-                return "broken", f"{required.name} missing"
+        present = [f for f in lab_files if f.exists()]
+        shadow_dirs = [
+            d
+            for d in s.home_dir.iterdir()
+            if d.is_dir() and (d / SIDECAR_FILE).exists()
+        ]
+        if not present and not shadow_dirs:
+            return "fresh", ""
+        for f in lab_files:
+            if not f.exists():
+                return "broken", f"{f.name} missing"
+        for d in shadow_dirs:
+            if not (d / IDENTITY_FILE).exists():
+                return "broken", f"{d.name}/{IDENTITY_FILE} missing"
+            try:
+                load_sidecar(d)
+            except Exception as exc:
+                return "broken", f"{d.name} unreadable: {exc}"
         return "ok", ""
 
     def plan(self) -> list[str]:
         s = self.settings
-        lines = [f"create at {s.home_dir}:"]
-        for name in DEFAULT_SHADOWS:
-            lines.append(f"  keys/{name}.pem  (new Ed25519 identity)")
-        lines.append(
-            f"  config.yaml  ({len(DEFAULT_SHADOWS)} shadows, ports auto-assigned)"
+        return [
+            f"create at {s.home_dir}:",
+            "  lab-issuer.pem  (stranger-review issuer)",
+            "  personas.yaml  (seed templates)" if not s.personas_file.exists() else "",
+            "  secrets.yaml  (empty pool)" if not s.secrets_file.exists() else "",
+            f"  one dir per shadow ({', '.join(DEFAULT_SHADOWS)}), named by key,",
+            "    each: identity.pem · sidecar.yaml · sidecar.db",
+        ]
+
+    def _lab_trust(self, issuer: SigningKey) -> TrustConfig:
+        return TrustConfig(
+            issuers=[TrustEntry(issuer=issuer.multibase, accept=["org_affiliation"])]
         )
-        lines.append("  keys/lab-issuer.pem + trust.yaml  (stranger-review issuer)")
-        lines.append("  shadowbox.db")
-        if not s.personas_file.exists():
-            lines.append("  personas.yaml  (seed persona templates)")
-        if not s.secrets_file.exists():
-            lines.append("  secrets.yaml  (empty; add provider/telegram keys)")
-        lines.append("  hermes/")
-        return lines
+
+    def _create_shadow(
+        self,
+        name: str,
+        port: int,
+        mcp_port: int,
+        issuer: SigningKey,
+        trust: TrustConfig,
+        agent_cfg: AgentConfig | None,
+    ) -> Shadow:
+        key = SigningKey.generate()
+        directory = self.settings.home_dir / key.multibase
+        directory.mkdir(parents=True)
+        key.save(directory / IDENTITY_FILE)
+        save_sidecar(
+            directory,
+            SidecarConfig(
+                name=name,
+                port=port,
+                mcp_port=mcp_port,
+                token=token_urlsafe(16),
+                trust=trust,
+            ),
+        )
+        if agent_cfg is not None:
+            save_agent(directory, agent_cfg)
+        shadow = Shadow(self.settings, directory, self)
+        now = int(time.time())
+        shadow.credentials.add(
+            Credential.mint(issuer, key.multibase, now), now + 30 * 86400
+        )
+        if agent_cfg is not None:
+            shadow.agent.generate()
+        shadow.close()
+        return shadow
 
     def initialize(self) -> list[str]:
         s = self.settings
-        s.keys_dir.mkdir(parents=True, exist_ok=True)
-        s.hermes_dir.mkdir(exist_ok=True)
+        s.home_dir.mkdir(parents=True, exist_ok=True)
         lines = [f"created {s.home_dir}"]
-
         issuer = SigningKey.generate()
         issuer.save(s.issuer_key_file)
-        save_trust(
-            s,
-            TrustConfig(
-                issuers=[
-                    TrustEntry(issuer=issuer.multibase, accept=["org_affiliation"])
-                ]
-            ),
-        )
-        lines.append(f"wrote {s.trust_file} (lab issuer {issuer.multibase[:16]}…)")
-
-        ports = free_ports(2 * len(DEFAULT_SHADOWS))
-        shadows: list[ShadowConfig] = []
-        keys: dict[str, SigningKey] = {}
-        for i, name in enumerate(DEFAULT_SHADOWS):
-            key = SigningKey.generate()
-            key.save(s.keys_dir / f"{name}.pem")
-            keys[name] = key
-            port, mcp_port = ports[2 * i], ports[2 * i + 1]
-            shadows.append(
-                ShadowConfig(
-                    name=name, port=port, mcp_port=mcp_port, token=token_urlsafe(16)
-                )
-            )
-            lines.append(f"{name}: shadow://key:{key.multibase}@localhost:{port}")
-        save_config(s, Config(shadows=shadows))
-        lines.append(f"wrote {s.config_file}")
-
+        lines.append(f"wrote lab-issuer.pem ({issuer.multibase[:16]}…)")
         if not s.personas_file.exists():
             save_personas(s, Personas(personas=DEFAULT_TEMPLATES))
-            lines.append(f"wrote {s.personas_file}")
+            lines.append("wrote personas.yaml")
         if not s.secrets_file.exists():
             save_secrets(s, Secrets())
-            lines.append(f"wrote {s.secrets_file} (add your keys here)")
-
-        sqlite3.connect(s.db_file).close()
-        lines.append(f"created {s.db_file}")
-        for name, key in keys.items():
-            self._issue_credential(issuer, name, key.multibase)
+            lines.append("wrote secrets.yaml (add provider/telegram keys)")
+        trust = self._lab_trust(issuer)
+        ports = free_ports(2 * len(DEFAULT_SHADOWS))
+        for i, name in enumerate(DEFAULT_SHADOWS):
+            shadow = self._create_shadow(
+                name, ports[2 * i], ports[2 * i + 1], issuer, trust, None
+            )
+            lines.append(f"{name}: {shadow.uri}")
         self._invalidate()
         return lines
-
-    def _issue_credential(self, issuer: SigningKey, name: str, subject: str) -> None:
-        now = int(time.time())
-        token = Credential.mint(issuer, subject, now)
-        store = SqliteCredentialStore(self.settings, name)
-        store.add(token, now + 30 * 86400)
-        store.close()
 
     def wipe(self) -> list[str]:
         s = self.settings
         self._invalidate()
+        keep = {s.personas_file.name, s.secrets_file.name}
         lines: list[str] = []
-        for directory in (s.keys_dir, s.hermes_dir):
-            if directory.exists():
-                shutil.rmtree(directory)
-                lines.append(f"deleted {directory}")
-        for f in (s.config_file, s.db_file, s.trust_file):
-            if f.exists():
-                f.unlink()
-                lines.append(f"deleted {f}")
+        if s.home_dir.exists():
+            for entry in s.home_dir.iterdir():
+                if entry.name in keep:
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                lines.append(f"deleted {entry.name}")
         return lines
 
     def add_shadow(
@@ -341,8 +368,7 @@ class Orchestrator:
         telegram: str | None = None,
     ) -> tuple[Shadow, list[str]]:
         s = self.settings
-        config = load_config(s)
-        if any(sh.name == name for sh in config.shadows):
+        if name in self._map():
             raise OrchestratorError(f"shadow {name} already exists")
 
         template = None
@@ -364,60 +390,33 @@ class Orchestrator:
         if (template or telegram_cred) and provider_cred is None:
             raise OrchestratorError("persona/telegram require a provider")
 
-        port, mcp_port = free_ports(2)
-        shadow_config = ShadowConfig(
-            name=name,
-            port=port,
-            mcp_port=mcp_port,
-            token=token_urlsafe(16),
-            persona=persona,
-            provider=provider,
-            telegram=telegram,
-        )
-        key = SigningKey.generate()
-        key.save(s.keys_dir / f"{name}.pem")
-        config.shadows.append(shadow_config)
-        save_config(s, config)
-        self._issue_credential(SigningKey.load(s.issuer_key_file), name, key.multibase)
-        self._invalidate()
+        agent_cfg = None
+        if provider_cred is not None:
+            agent_cfg = AgentConfig(
+                provider=provider_cred,
+                persona_id=persona,
+                soul=template.soul if template else None,
+                telegram=telegram_cred,
+            )
 
+        issuer = SigningKey.load(s.issuer_key_file)
+        port, mcp_port = free_ports(2)
+        self._create_shadow(
+            name, port, mcp_port, issuer, self._lab_trust(issuer), agent_cfg
+        )
+        self._invalidate()
         shadow = self.get(name)
         lines = [f"created {shadow.uri}"]
-        if provider_cred is not None:
-            lines += shadow.agent.generate(provider_cred, template, telegram_cred)
+        if agent_cfg is not None:
+            lines.append(f"host LLM configured ({provider})")
         return shadow, lines
 
     async def remove_shadow(self, name: str) -> None:
-        s = self.settings
-        config = load_config(s)
-        if not any(sh.name == name for sh in config.shadows):
-            raise OrchestratorError(f"no shadow named {name}")
+        directory = self.get(name).directory
         await self.down(name)
-        db = sqlite3.connect(s.db_file)
-        for table in (
-            "contacts",
-            "directives",
-            "messages",
-            "replay",
-            "credentials",
-            "events",
-        ):
-            try:
-                db.execute(f"DELETE FROM {table} WHERE shadow = ?", (name,))
-            except sqlite3.OperationalError:
-                pass
-        db.commit()
-        db.close()
-        key_file = s.keys_dir / f"{name}.pem"
-        if key_file.exists():
-            key_file.unlink()
-        hermes_home = s.hermes_dir / name
-        if hermes_home.exists():
-            shutil.rmtree(hermes_home)
-        config.shadows = [sh for sh in config.shadows if sh.name != name]
-        save_config(s, config)
-        self.log(f"{name} removed")
         self._invalidate()
+        shutil.rmtree(directory)
+        self.log(f"{name} removed")
 
 
 def main() -> None:
@@ -432,8 +431,8 @@ def main() -> None:
         orchestrator.start_all()
         for shadow in orchestrator.shadows:
             print(
-                f"{shadow.name}: gateway http://127.0.0.1:{shadow.config.mcp_port}/mcp"
-                f"  wire http://127.0.0.1:{shadow.config.port}"
+                f"{shadow.name}: gateway http://127.0.0.1:{shadow.mcp_port}/mcp"
+                f"  wire http://127.0.0.1:{shadow.port}"
             )
         await orchestrator.wait()
 

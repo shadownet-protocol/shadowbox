@@ -3,14 +3,13 @@ import json
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
+from pathlib import Path
 
-from shadowbox.config import Settings
 from shadowbox.models import Event
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    shadow TEXT NOT NULL,
     event TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
     data TEXT NOT NULL
@@ -21,8 +20,6 @@ MAX_WAIT = 90
 
 
 class EventStore(ABC):
-    shadow: str
-
     @abstractmethod
     def close(self) -> None: ...
 
@@ -39,9 +36,8 @@ class EventStore(ABC):
 
 
 class SqliteEventStore(EventStore):
-    def __init__(self, settings: Settings, shadow: str):
-        self.shadow = shadow
-        self.db = sqlite3.connect(settings.db_file, check_same_thread=False)
+    def __init__(self, db_path: Path):
+        self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute(SCHEMA)
         self.db.commit()
@@ -59,8 +55,8 @@ class SqliteEventStore(EventStore):
     def emit(self, event: str, data: dict) -> Event:
         occurred_at = datetime.now(UTC).isoformat(timespec="seconds")
         cur = self.db.execute(
-            "INSERT INTO events (shadow, event, occurred_at, data) VALUES (?, ?, ?, ?)",
-            (self.shadow, event, occurred_at, json.dumps(data)),
+            "INSERT INTO events (event, occurred_at, data) VALUES (?, ?, ?)",
+            (event, occurred_at, json.dumps(data)),
         )
         self.db.commit()
         self._notify()
@@ -72,16 +68,13 @@ class SqliteEventStore(EventStore):
         )
 
     def _high_water(self) -> str | None:
-        row = self.db.execute(
-            "SELECT MAX(seq) AS hw FROM events WHERE shadow = ?", (self.shadow,)
-        ).fetchone()
+        row = self.db.execute("SELECT MAX(seq) AS hw FROM events").fetchone()
         return str(row["hw"]) if row["hw"] is not None else None
 
     def since(self, last_event_id: str | None) -> tuple[list[Event], str | None]:
         cursor = int(last_event_id) if last_event_id is not None else 0
         rows = self.db.execute(
-            "SELECT * FROM events WHERE shadow = ? AND seq > ? ORDER BY seq",
-            (self.shadow, cursor),
+            "SELECT * FROM events WHERE seq > ? ORDER BY seq", (cursor,)
         ).fetchall()
         events = [
             Event(

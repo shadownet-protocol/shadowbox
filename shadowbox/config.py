@@ -7,19 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ProviderKind = Literal["anthropic", "openai", "openrouter"]
 
-
-class ShadowConfig(BaseModel):
-    name: str
-    port: int
-    mcp_port: int
-    token: str
-    persona: str | None = None
-    provider: str | None = None
-    telegram: str | None = None
-
-
-class Config(BaseModel):
-    shadows: list[ShadowConfig]
+SIDECAR_FILE = "sidecar.yaml"
+AGENT_FILE = "agent.yaml"
+IDENTITY_FILE = "identity.pem"
+DB_FILE = "sidecar.db"
+HERMES_DIR = "hermes"
 
 
 class PersonaTemplate(BaseModel):
@@ -70,6 +62,21 @@ class TrustConfig(BaseModel):
     from_stranger: list[str] = ["org_affiliation"]
 
 
+class SidecarConfig(BaseModel):
+    name: str
+    port: int
+    mcp_port: int
+    token: str
+    trust: TrustConfig = TrustConfig()
+
+
+class AgentConfig(BaseModel):
+    provider: ProviderCred
+    persona_id: str | None = None
+    soul: str | None = None
+    telegram: TelegramCred | None = None
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SHADOWBOX_")
 
@@ -80,18 +87,6 @@ class Settings(BaseSettings):
         return self.home.expanduser()
 
     @property
-    def config_file(self) -> Path:
-        return self.home_dir / "config.yaml"
-
-    @property
-    def db_file(self) -> Path:
-        return self.home_dir / "shadowbox.db"
-
-    @property
-    def keys_dir(self) -> Path:
-        return self.home_dir / "keys"
-
-    @property
     def personas_file(self) -> Path:
         return self.home_dir / "personas.yaml"
 
@@ -100,26 +95,8 @@ class Settings(BaseSettings):
         return self.home_dir / "secrets.yaml"
 
     @property
-    def hermes_dir(self) -> Path:
-        return self.home_dir / "hermes"
-
-    @property
-    def trust_file(self) -> Path:
-        return self.home_dir / "trust.yaml"
-
-    @property
     def issuer_key_file(self) -> Path:
-        return self.keys_dir / "lab-issuer.pem"
-
-
-def load_config(settings: Settings) -> Config:
-    return Config.model_validate(yaml.safe_load(settings.config_file.read_text()))
-
-
-def save_config(settings: Settings, config: Config) -> None:
-    settings.config_file.write_text(
-        yaml.safe_dump(config.model_dump(exclude_none=True), sort_keys=False)
-    )
+        return self.home_dir / "lab-issuer.pem"
 
 
 def load_personas(settings: Settings) -> Personas:
@@ -145,11 +122,26 @@ def save_secrets(settings: Settings, secrets: Secrets) -> None:
     settings.secrets_file.chmod(0o600)
 
 
-def load_trust(settings: Settings) -> TrustConfig:
-    return TrustConfig.model_validate(
-        yaml.safe_load(settings.trust_file.read_text()) or {}
+def load_sidecar(directory: Path) -> SidecarConfig:
+    return SidecarConfig.model_validate(
+        yaml.safe_load((directory / SIDECAR_FILE).read_text())
     )
 
 
-def save_trust(settings: Settings, trust: TrustConfig) -> None:
-    settings.trust_file.write_text(yaml.safe_dump(trust.model_dump(), sort_keys=False))
+def save_sidecar(directory: Path, config: SidecarConfig) -> None:
+    (directory / SIDECAR_FILE).write_text(
+        yaml.safe_dump(config.model_dump(), sort_keys=False)
+    )
+
+
+def load_agent(directory: Path) -> AgentConfig | None:
+    path = directory / AGENT_FILE
+    if not path.exists():
+        return None
+    return AgentConfig.model_validate(yaml.safe_load(path.read_text()))
+
+
+def save_agent(directory: Path, config: AgentConfig) -> None:
+    path = directory / AGENT_FILE
+    path.write_text(yaml.safe_dump(config.model_dump(), sort_keys=False))
+    path.chmod(0o600)
