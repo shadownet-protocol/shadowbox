@@ -1,312 +1,52 @@
+import asyncio
+
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
-from textual.screen import ModalScreen, Screen
-from textual.widgets import (
-    Button,
-    DataTable,
-    Footer,
-    Header,
-    Input,
-    Label,
-    ListItem,
-    ListView,
-    Select,
-    Static,
-)
+from textual.containers import Horizontal
+from textual.widgets import Footer, Header, Label, ListItem, ListView, RichLog, Static
 
-from shadowbox.config import (
-    PersonaTemplate,
-    ProviderCred,
-    TelegramCred,
-    load_personas,
-    load_secrets,
-)
-from shadowbox.data.contacts import ToolError
-from shadowbox.models import AddContactInput, ContactProfile
+from shadowbox.config import load_personas, load_secrets
 from shadowbox.orchestrator import Orchestrator, OrchestratorError
-from shadowbox.shadow import Shadow
+from shadowbox.tui.modals import CSS as MODAL_CSS
+from shadowbox.tui.modals import AddShadowScreen, ConfirmScreen
+from shadowbox.tui.screens import ShadowScreen
 
 
-class ConfirmScreen(ModalScreen[bool]):
-    BINDINGS = [("escape", "cancel", "cancel")]
-
-    def __init__(
-        self,
-        title: str,
-        lines: list[str],
-        action: str,
-        variant: str = "error",
-        cancel_label: str = "Cancel",
-    ):
-        super().__init__()
-        self._title = title
-        self._lines = lines
-        self._action = action
-        self._variant = variant
-        self._cancel_label = cancel_label
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label(self._title, id="dialog-title")
-            for line in self._lines:
-                yield Static(line)
-            with Horizontal(id="dialog-buttons"):
-                yield Button(self._action, variant=self._variant, id="confirm")
-                yield Button(self._cancel_label, id="cancel")
-
-    def on_mount(self) -> None:
-        self.query_one("#cancel", Button).focus()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "confirm")
-
-    def action_cancel(self) -> None:
-        self.dismiss(False)
+def lamp(up: bool) -> str:
+    return "[green]●[/]" if up else "[red]○[/]"
 
 
-class AddContactScreen(ModalScreen[tuple[str, str] | None]):
-    BINDINGS = [("escape", "cancel", "cancel")]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("add contact", id="dialog-title")
-            yield Input(placeholder="shadow://key:z6Mk...@host:port", id="uri")
-            yield Input(placeholder="display name (optional)", id="display")
-            with Horizontal(id="dialog-buttons"):
-                yield Button("Add", variant="success", id="confirm")
-                yield Button("Cancel", id="cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id != "confirm":
-            self.dismiss(None)
-            return
-        self._submit()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._submit()
-
-    def _submit(self) -> None:
-        uri = self.query_one("#uri", Input).value.strip()
-        display = self.query_one("#display", Input).value.strip()
-        if uri:
-            self.dismiss((uri, display))
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+def agent_lamp(status: str | None) -> str:
+    if status is None:
+        return "[dim]–[/]"
+    return "[green]●[/]" if status == "running" else "[red]○[/]"
 
 
-class NotesScreen(ModalScreen[str | None]):
-    BINDINGS = [("escape", "cancel", "cancel")]
-
-    def __init__(self, notes: str):
-        super().__init__()
-        self._notes = notes
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("notes", id="dialog-title")
-            yield Input(value=self._notes, id="notes")
-            with Horizontal(id="dialog-buttons"):
-                yield Button("Save", variant="success", id="confirm")
-                yield Button("Cancel", id="cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "confirm":
-            self.dismiss(self.query_one("#notes", Input).value)
-        else:
-            self.dismiss(None)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value)
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class AddShadowScreen(ModalScreen[dict | None]):
-    BINDINGS = [("escape", "cancel", "cancel")]
-
-    def __init__(
-        self,
-        personas: list[PersonaTemplate],
-        providers: list[ProviderCred],
-        telegrams: list[TelegramCred],
-    ):
-        super().__init__()
-        self._personas = personas
-        self._providers = providers
-        self._telegrams = telegrams
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="dialog"):
-            yield Label("new shadow", id="dialog-title")
-            yield Input(placeholder="name", id="name")
-            yield Select(
-                [(p.display, p.id) for p in self._personas],
-                prompt="persona (optional)",
-                id="persona",
-            )
-            yield Select(
-                [(f"{p.name}  [{p.kind}: {p.model}]", p.name) for p in self._providers],
-                prompt="provider (optional)",
-                id="provider",
-            )
-            yield Select(
-                [(t.name, t.name) for t in self._telegrams],
-                prompt="telegram (optional)",
-                id="telegram",
-            )
-            with Horizontal(id="dialog-buttons"):
-                yield Button("Create", variant="success", id="confirm")
-                yield Button("Cancel", id="cancel")
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id != "confirm":
-            self.dismiss(None)
-            return
-        self._submit()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self._submit()
-
-    def _select_value(self, select_id: str) -> str | None:
-        value = self.query_one(f"#{select_id}", Select).value
-        return None if value is Select.BLANK else value
-
-    def _submit(self) -> None:
-        name = self.query_one("#name", Input).value.strip()
-        if not name:
-            return
-        self.dismiss(
-            {
-                "name": name,
-                "persona": self._select_value("persona"),
-                "provider": self._select_value("provider"),
-                "telegram": self._select_value("telegram"),
-            }
-        )
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-
-class ContactsScreen(Screen):
-    BINDINGS = [
-        ("a", "add", "add contact"),
-        ("g", "toggle_grant", "toggle messaging"),
-        ("e", "edit_notes", "edit notes"),
-        ("escape", "back", "back"),
-    ]
-
-    def __init__(self, shadow: Shadow):
-        super().__init__()
-        self.shadow = shadow
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        yield DataTable(cursor_type="row")
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self.app.sub_title = f"{self.shadow.name} — contacts"
-        self.store = self.shadow.contacts
-        table = self.query_one(DataTable)
-        table.add_columns("contact", "display name", "grants")
-        self._reload()
-        table.focus()
-
-    def _reload(self) -> None:
-        table = self.query_one(DataTable)
-        table.clear()
-        self.names: list[str] = []
-        for c in self.store.contacts().contacts:
-            self.names.append(c.shadowname)
-            table.add_row(c.shadowname, c.display_name or "", ", ".join(c.grants))
-
-    def _selected(self) -> str | None:
-        table = self.query_one(DataTable)
-        if not self.names or table.cursor_row >= len(self.names):
-            return None
-        return self.names[table.cursor_row]
-
-    def action_back(self) -> None:
-        self.app.pop_screen()
-
-    @work
-    async def action_add(self) -> None:
-        result = await self.app.push_screen_wait(AddContactScreen())
-        if result is None:
-            return
-        uri, display = result
-        try:
-            added = self.store.add_contact(
-                AddContactInput(name=uri, display_name=display or None)
-            )
-        except ToolError as exc:
-            self.notify(exc.code, severity="error")
-            return
-        self._reload()
-        self.notify(f"added {added.shadowname}")
-
-    @work
-    async def action_toggle_grant(self) -> None:
-        name = self._selected()
-        if name is None:
-            return
-        detail = self.store.contact_detail(name)
-        if "messaging" in detail.grants:
-            ok = await self.app.push_screen_wait(
-                ConfirmScreen(
-                    "revoke messaging?",
-                    [name, "future inbound routes to stranger review"],
-                    "Revoke",
-                )
-            )
-            if not ok:
-                return
-            self.store.grant(name, "messaging", False)
-        else:
-            self.store.grant(name, "messaging", True)
-        self._reload()
-
-    @work
-    async def action_edit_notes(self) -> None:
-        name = self._selected()
-        if name is None:
-            return
-        detail = self.store.contact_detail(name)
-        profile = detail.profile or ContactProfile()
-        notes = await self.app.push_screen_wait(NotesScreen(profile.notes or ""))
-        if notes is None:
-            return
-        self.store.set_contact_profile(
-            name, profile.model_copy(update={"notes": notes or None})
-        )
-        self.notify("profile updated")
+def row_markup(name: str, sub: dict, persona: str | None) -> str:
+    lamps = f"G{lamp(sub['gateway'])} A{lamp(sub['a2a'])} L{agent_lamp(sub['agent'])}"
+    tail = f"  [dim]{persona}[/dim]" if persona else ""
+    return f"[b]{name:<10}[/b] {lamps}{tail}"
 
 
 class ShadowboxApp(App):
     TITLE = "shadowbox"
-    CSS = """
-    ConfirmScreen, AddContactScreen, NotesScreen, AddShadowScreen {
-        align: center middle;
-    }
-    #dialog {
-        width: 90; height: auto; max-height: 80%;
-        border: round $primary; padding: 1 2; background: $surface;
-    }
-    #dialog-title { text-style: bold; margin-bottom: 1; }
-    #dialog Input { margin: 1 0; }
-    #dialog Select { margin: 1 0; }
-    #dialog-buttons { height: auto; align-horizontal: center; margin-top: 1; }
-    #dialog-buttons Button { margin: 0 2; }
+    CSS = (
+        MODAL_CSS
+        + """
+    #top { height: 1fr; }
+    #shadows { width: 45%; border-right: solid $panel; }
+    #details { width: 1fr; padding: 1 2; }
+    #events { height: 9; border-top: solid $panel; }
+    #stats { padding: 1 2; height: auto; }
     """
+    )
     BINDINGS = [
+        ("u", "up", "up"),
+        ("d", "down", "down"),
+        ("n", "new_shadow", "new"),
+        ("w", "wipe", "wipe"),
+        ("r", "reinit", "reinit"),
         ("q", "quit", "quit"),
-        ("n", "new_shadow", "new shadow"),
-        ("s", "toggle_agent", "host LLM"),
-        ("r", "reinit", "reinitialize"),
     ]
 
     def __init__(self):
@@ -315,7 +55,10 @@ class ShadowboxApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield ListView()
+        with Horizontal(id="top"):
+            yield ListView(id="shadows")
+            yield Static(id="details")
+        yield RichLog(id="events", markup=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -343,10 +86,8 @@ class ShadowboxApp(App):
                 ConfirmScreen(
                     f"state at {self.orchestrator.settings.home_dir} broken: {reason}",
                     [
-                        "reinitializing permanently deletes:",
-                        "  keys/  (identities are unrecoverable)",
-                        "  config.yaml, shadowbox.db, hermes/",
-                        "personas.yaml and secrets.yaml are kept",
+                        "reinitializing permanently deletes keys/, config.yaml,",
+                        "shadowbox.db, trust.yaml, hermes/  (personas/secrets kept)",
                     ],
                     "Delete and reinitialize",
                     cancel_label="Quit",
@@ -358,55 +99,111 @@ class ShadowboxApp(App):
             self.orchestrator.wipe()
             self.orchestrator.initialize()
         self.orchestrator.start_all()
-        self._load_shadows()
+        self._load()
+        self._feed()
 
     def on_unmount(self) -> None:
         self.orchestrator.stop_all()
 
-    def _load_shadows(self) -> None:
-        lv = self.query_one(ListView)
+    def _highlighted(self) -> str | None:
+        item = self.query_one("#shadows", ListView).highlighted_child
+        return item.shadow_name if item is not None else None
+
+    def _load(self) -> None:
+        lv = self.query_one("#shadows", ListView)
+        index = lv.index
         lv.clear()
         for shadow in self.orchestrator.shadows:
-            extras = " / ".join(
-                v
-                for v in (shadow.config.persona, shadow.config.provider)
-                if v is not None
-            )
-            mark = "●" if self.orchestrator.running(shadow.name) else "○"
-            detail = f"mcp :{shadow.config.mcp_port} {mark}"
-            if shadow.config.provider is not None:
-                detail += f"  llm:{self.orchestrator.agent_status(shadow.name)}"
-            if extras:
-                detail += f"  {extras}"
-            item = ListItem(
-                Label(f"[b]{shadow.name}[/b]  {shadow.uri}  [dim]{detail}[/dim]")
-            )
+            sub = self.orchestrator.subsystems(shadow.name)
+            item = ListItem(Label(row_markup(shadow.name, sub, shadow.config.persona)))
             item.shadow_name = shadow.name
             lv.append(item)
+        if lv.children:
+            lv.index = min(index, len(lv.children) - 1) if index is not None else 0
         lv.focus()
+        self._show_details(self._highlighted())
+
+    def _refresh_rows(self) -> None:
+        for item in self.query_one("#shadows", ListView).children:
+            name = getattr(item, "shadow_name", None)
+            if name is None:
+                continue
+            sub = self.orchestrator.subsystems(name)
+            persona = self.orchestrator.get(name).config.persona
+            item.query_one(Label).update(row_markup(name, sub, persona))
+
+    def _show_details(self, name: str | None) -> None:
+        details = self.query_one("#details", Static)
+        if name is None:
+            details.update("no shadows")
+            return
+        shadow = self.orchestrator.get(name)
+        sub = self.orchestrator.subsystems(name)
+        c = shadow.config
+        contacts = len(shadow.contacts.contacts().contacts)
+        reviews = len(
+            [
+                i
+                for i in shadow.messages.inbox(include_review=True).items
+                if i.status == "stranger_review"
+            ]
+        )
+        gw = "mcp✓ sse✓" if sub["gateway"] else "down"
+        details.update(
+            f"[b]{name}[/b]\n"
+            f"gateway :{c.mcp_port}  {gw}\n"
+            f"a2a     :{c.port}  {'up' if sub['a2a'] else 'down'}\n"
+            f"agent   {sub['agent'] or 'n/a'}\n"
+            f"key     {shadow.public_key.multibase[:16]}…\n"
+            f"{contacts} contacts · {reviews} review"
+        )
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        name = getattr(event.item, "shadow_name", None) if event.item else None
+        self._show_details(name)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self.push_screen(ContactsScreen(self.orchestrator.get(event.item.shadow_name)))
+        name = getattr(event.item, "shadow_name", None)
+        if name is not None:
+            self.push_screen(
+                ShadowScreen(self.orchestrator, self.orchestrator.get(name))
+            )
+
+    @work(exclusive=True)
+    async def _feed(self) -> None:
+        log = self.query_one("#events", RichLog)
+        cursors: dict[str, str | None] = {}
+        while True:
+            for line in self.orchestrator.drain_log():
+                log.write(f"[dim]·[/] {line}")
+            for shadow in self.orchestrator.shadows:
+                events, cursors[shadow.name] = shadow.events.since(
+                    cursors.get(shadow.name)
+                )
+                for e in events:
+                    summary = e.data.get("from", e.data.get("scope", ""))
+                    log.write(
+                        f"{e.occurred_at[11:]} [b]{shadow.name}[/b]"
+                        f"  {e.event}  [dim]{summary}[/dim]"
+                    )
+            self._refresh_rows()
+            if self.screen is self:
+                self._show_details(self._highlighted())
+            await asyncio.sleep(0.6)
 
     @work
-    async def action_toggle_agent(self) -> None:
-        item = self.query_one(ListView).highlighted_child
-        if item is None:
-            return
-        name = item.shadow_name
-        if self.orchestrator.get(name).config.provider is None:
-            self.notify("no host LLM configured for this shadow", severity="warning")
-            return
-        try:
-            if self.orchestrator.agent_status(name) == "running":
-                await self.orchestrator.stop_agent(name)
-                self.notify(f"{name} host LLM stopped")
-            else:
-                await self.orchestrator.start_agent(name)
-                self.notify(f"{name} host LLM started")
-        except RuntimeError as exc:
-            self.notify(str(exc), severity="error")
-        self._load_shadows()
+    async def action_up(self) -> None:
+        name = self._highlighted()
+        if name is not None:
+            await self.orchestrator.up(name)
+            self._refresh_rows()
+
+    @work
+    async def action_down(self) -> None:
+        name = self._highlighted()
+        if name is not None:
+            await self.orchestrator.down(name)
+            self._refresh_rows()
 
     @work
     async def action_new_shadow(self) -> None:
@@ -416,8 +213,12 @@ class ShadowboxApp(App):
         except FileNotFoundError:
             self.notify("lab not initialized", severity="error")
             return
+        existing = {s.name for s in self.orchestrator.shadows}
+        n = len(existing) + 1
+        while f"shadow{n}" in existing:
+            n += 1
         result = await self.push_screen_wait(
-            AddShadowScreen(personas, secrets.providers, secrets.telegram)
+            AddShadowScreen(f"shadow{n}", personas, secrets.providers, secrets.telegram)
         )
         if result is None:
             return
@@ -426,20 +227,35 @@ class ShadowboxApp(App):
         except OrchestratorError as exc:
             self.notify(str(exc), severity="error")
             return
-        self.orchestrator.start(shadow.name)
-        self._load_shadows()
+        await self.orchestrator.up(shadow.name)
+        self._load()
         self.notify("\n".join(lines), markup=False)
+
+    @work
+    async def action_wipe(self) -> None:
+        name = self._highlighted()
+        if name is None:
+            return
+        ok = await self.push_screen_wait(
+            ConfirmScreen(
+                f"wipe {name}?",
+                ["permanently deletes its key, contacts, messages, creds, hermes home"],
+                "Wipe shadow",
+            )
+        )
+        if not ok:
+            return
+        await self.orchestrator.remove_shadow(name)
+        self._load()
 
     @work
     async def action_reinit(self) -> None:
         ok = await self.push_screen_wait(
             ConfirmScreen(
-                "delete and reinitialize?",
+                "delete and reinitialize the whole lab?",
                 [
-                    f"permanently deletes from {self.orchestrator.settings.home_dir}:",
-                    "  keys/  (identities are unrecoverable)",
-                    "  config.yaml, shadowbox.db, hermes/",
-                    "personas.yaml and secrets.yaml are kept",
+                    "permanently deletes keys/, config.yaml, shadowbox.db, trust.yaml,"
+                    " hermes/  (personas/secrets kept)"
                 ],
                 "Delete and reinitialize",
             )
@@ -450,7 +266,7 @@ class ShadowboxApp(App):
         self.orchestrator.wipe()
         self.orchestrator.initialize()
         self.orchestrator.start_all()
-        self._load_shadows()
+        self._load()
         self.notify("reinitialized")
 
 
