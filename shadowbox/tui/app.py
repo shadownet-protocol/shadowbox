@@ -9,7 +9,7 @@ from shadowbox.config import load_personas, load_secrets
 from shadowbox.orchestrator import Orchestrator, OrchestratorError
 from shadowbox.tui.modals import CSS as MODAL_CSS
 from shadowbox.tui.modals import AddShadowScreen, ConfirmScreen
-from shadowbox.tui.screens import ShadowScreen
+from shadowbox.tui.screens import SettingsScreen, ShadowScreen
 
 
 def lamp(up: bool) -> str:
@@ -44,7 +44,9 @@ class ShadowboxApp(App):
         ("u", "up", "up"),
         ("d", "down", "down"),
         ("n", "new_shadow", "new"),
+        ("e", "edit_shadow", "edit"),
         ("w", "wipe", "wipe"),
+        ("c", "settings", "config"),
         ("r", "reinit", "reinit"),
         ("q", "quit", "quit"),
     ]
@@ -229,6 +231,47 @@ class ShadowboxApp(App):
         await self.orchestrator.up(shadow.name)
         self._load()
         self.notify("\n".join(lines), markup=False)
+
+    def action_settings(self) -> None:
+        self.push_screen(SettingsScreen(self.orchestrator))
+
+    @work
+    async def action_edit_shadow(self) -> None:
+        name = self._highlighted()
+        if name is None:
+            return
+        try:
+            personas = load_personas(self.orchestrator.settings).personas
+            secrets = load_secrets(self.orchestrator.settings)
+        except FileNotFoundError:
+            self.notify("lab not initialized", severity="error")
+            return
+        shadow = self.orchestrator.get(name)
+        cfg = shadow.agent_config
+        current = {
+            "persona": shadow.persona,
+            "provider": shadow.provider,
+            "telegram": cfg.telegram.name if cfg and cfg.telegram else None,
+        }
+        result = await self.push_screen_wait(
+            AddShadowScreen(
+                name, personas, secrets.providers, secrets.telegram, current=current
+            )
+        )
+        if result is None:
+            return
+        try:
+            await self.orchestrator.configure_shadow(
+                name,
+                persona=result["persona"],
+                provider=result["provider"],
+                telegram=result["telegram"],
+            )
+        except OrchestratorError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._load()
+        self.notify(f"{name} reconfigured")
 
     @work
     async def action_wipe(self) -> None:

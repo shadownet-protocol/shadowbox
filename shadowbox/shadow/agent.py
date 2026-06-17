@@ -83,7 +83,7 @@ class Agent:
 
     def _command(self) -> list[str] | None:
         exe = shutil.which("hermes")
-        return [exe] if exe else None
+        return [exe, "gateway", "run"] if exe else None
 
     @property
     def running(self) -> bool:

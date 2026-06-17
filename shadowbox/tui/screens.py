@@ -20,7 +20,13 @@ from shadowbox.data.credential import Credential
 from shadowbox.models import AddContactInput, ContactProfile
 from shadowbox.orchestrator import Orchestrator
 from shadowbox.shadow import Shadow
-from shadowbox.tui.modals import AddContactScreen, ConfirmScreen, NotesScreen
+from shadowbox.tui.modals import (
+    AddContactScreen,
+    AddProviderScreen,
+    AddTelegramScreen,
+    ConfirmScreen,
+    NotesScreen,
+)
 
 
 class ShadowScreen(Screen):
@@ -186,3 +192,81 @@ class ShadowScreen(Screen):
             return
         await self.orchestrator.remove_shadow(self.shadow.name)
         self.app.pop_screen()
+
+
+class SettingsScreen(Screen):
+    BINDINGS = [
+        ("p", "add_provider", "add provider"),
+        ("t", "add_telegram", "add telegram"),
+        ("x", "remove", "remove selected"),
+        ("escape", "back", "back"),
+    ]
+
+    def __init__(self, orchestrator: Orchestrator):
+        super().__init__()
+        self.orchestrator = orchestrator
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield Static(
+            "providers & telegram bots — picked when you create or edit a shadow",
+            id="stats",
+        )
+        with TabbedContent():
+            with TabPane("providers", id="tab-providers"):
+                yield DataTable(id="providers", cursor_type="row")
+            with TabPane("telegram", id="tab-telegram"):
+                yield DataTable(id="telegram", cursor_type="row")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.app.sub_title = "settings"
+        self.query_one("#providers", DataTable).add_columns("name", "kind", "model")
+        self.query_one("#telegram", DataTable).add_columns("name", "chat IDs")
+        self._reload()
+        self.query_one("#providers", DataTable).focus()
+
+    def _reload(self) -> None:
+        pt = self.query_one("#providers", DataTable)
+        pt.clear()
+        self.provider_names = []
+        for p in self.orchestrator.providers():
+            self.provider_names.append(p.name)
+            pt.add_row(p.name, p.kind, p.model)
+        tt = self.query_one("#telegram", DataTable)
+        tt.clear()
+        self.telegram_names = []
+        for t in self.orchestrator.telegrams():
+            self.telegram_names.append(t.name)
+            tt.add_row(t.name, ", ".join(t.allowed_users) or "(any)")
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    @work
+    async def action_add_provider(self) -> None:
+        result = await self.app.push_screen_wait(AddProviderScreen())
+        if result is None:
+            return
+        self.orchestrator.add_provider(**result)
+        self._reload()
+
+    @work
+    async def action_add_telegram(self) -> None:
+        result = await self.app.push_screen_wait(AddTelegramScreen())
+        if result is None:
+            return
+        self.orchestrator.add_telegram(**result)
+        self._reload()
+
+    def action_remove(self) -> None:
+        active = self.query_one(TabbedContent).active
+        if active == "tab-providers":
+            table = self.query_one("#providers", DataTable)
+            if self.provider_names and table.cursor_row < len(self.provider_names):
+                self.orchestrator.remove_provider(self.provider_names[table.cursor_row])
+        else:
+            table = self.query_one("#telegram", DataTable)
+            if self.telegram_names and table.cursor_row < len(self.telegram_names):
+                self.orchestrator.remove_telegram(self.telegram_names[table.cursor_row])
+        self._reload()

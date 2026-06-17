@@ -125,30 +125,47 @@ class AddShadowScreen(ModalScreen[dict | None]):
         personas: list[PersonaTemplate],
         providers: list[ProviderCred],
         telegrams: list[TelegramCred],
+        current: dict | None = None,
     ):
         super().__init__()
         self._next_name = next_name
         self._personas = personas
         self._providers = providers
         self._telegrams = telegrams
+        self._current = current or {}
+        self._editing = current is not None
+
+    def _value(self, key: str):
+        return self._current.get(key) or Select.BLANK
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label("new shadow", id="dialog-title")
-            yield Input(value=self._next_name, placeholder="shadow id", id="name")
+            yield Label(
+                f"edit shadow: {self._next_name}" if self._editing else "new shadow",
+                id="dialog-title",
+            )
+            yield Input(
+                value=self._next_name,
+                placeholder="shadow id",
+                id="name",
+                disabled=self._editing,
+            )
             yield Select(
                 [(p.display, p.id) for p in self._personas],
                 prompt="persona (optional)",
+                value=self._value("persona"),
                 id="persona",
             )
             yield Select(
                 [(f"{p.name}  [{p.kind}: {p.model}]", p.name) for p in self._providers],
                 prompt="provider (optional)",
+                value=self._value("provider"),
                 id="provider",
             )
             yield Select(
                 [(t.name, t.name) for t in self._telegrams],
-                prompt="telegram id (optional)",
+                prompt="telegram (optional)",
+                value=self._value("telegram"),
                 id="telegram",
             )
             with Horizontal(id="dialog-buttons"):
@@ -180,6 +197,72 @@ class AddShadowScreen(ModalScreen[dict | None]):
                 "telegram": self._select("telegram"),
             }
         )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class AddProviderScreen(ModalScreen[dict | None]):
+    BINDINGS = [("escape", "cancel", "cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("add provider", id="dialog-title")
+            yield Input(placeholder="name (e.g. or-main)", id="name")
+            yield Select(
+                [(k, k) for k in ("anthropic", "openai", "openrouter")],
+                prompt="kind",
+                id="kind",
+            )
+            yield Input(placeholder="model id", id="model")
+            yield Input(placeholder="API key", password=True, id="api_key")
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Add", variant="success", id="confirm")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "confirm":
+            self.dismiss(None)
+            return
+        name = self.query_one("#name", Input).value.strip()
+        kind = self.query_one("#kind", Select).value
+        model = self.query_one("#model", Input).value.strip()
+        api_key = self.query_one("#api_key", Input).value.strip()
+        if name and kind is not Select.BLANK and model and api_key:
+            self.dismiss(
+                {"name": name, "kind": kind, "model": model, "api_key": api_key}
+            )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class AddTelegramScreen(ModalScreen[dict | None]):
+    BINDINGS = [("escape", "cancel", "cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("add telegram bot", id="dialog-title")
+            yield Input(placeholder="name (e.g. my-bot)", id="name")
+            yield Input(placeholder="bot token", password=True, id="token")
+            yield Input(placeholder="allowed chat IDs, comma-separated", id="users")
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Add", variant="success", id="confirm")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "confirm":
+            self.dismiss(None)
+            return
+        name = self.query_one("#name", Input).value.strip()
+        token = self.query_one("#token", Input).value.strip()
+        users = [
+            u.strip()
+            for u in self.query_one("#users", Input).value.split(",")
+            if u.strip()
+        ]
+        if name and token:
+            self.dismiss({"name": name, "token": token, "allowed_users": users})
 
     def action_cancel(self) -> None:
         self.dismiss(None)

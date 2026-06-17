@@ -8,14 +8,18 @@ import httpx
 
 from shadowbox.address import Address
 from shadowbox.config import (
+    AGENT_FILE,
     IDENTITY_FILE,
     SIDECAR_FILE,
     AgentConfig,
     Personas,
     PersonaTemplate,
+    ProviderCred,
+    ProviderKind,
     Secrets,
     Settings,
     SidecarConfig,
+    TelegramCred,
     TrustConfig,
     TrustEntry,
     load_personas,
@@ -360,17 +364,10 @@ class Orchestrator:
                 lines.append(f"deleted {entry.name}")
         return lines
 
-    def add_shadow(
-        self,
-        name: str,
-        persona: str | None = None,
-        provider: str | None = None,
-        telegram: str | None = None,
-    ) -> tuple[Shadow, list[str]]:
+    def _agent_config(
+        self, persona: str | None, provider: str | None, telegram: str | None
+    ) -> AgentConfig | None:
         s = self.settings
-        if name in self._map():
-            raise OrchestratorError(f"shadow {name} already exists")
-
         template = None
         if persona is not None:
             template = load_personas(s).get(persona)
@@ -388,18 +385,27 @@ class Orchestrator:
             if telegram_cred is None:
                 raise OrchestratorError(f"unknown telegram key {telegram}")
         if (template or telegram_cred) and provider_cred is None:
-            raise OrchestratorError("persona/telegram require a provider")
+            raise OrchestratorError("persona/telegram need a provider")
+        if provider_cred is None:
+            return None
+        return AgentConfig(
+            provider=provider_cred,
+            persona_id=persona,
+            soul=template.soul if template else None,
+            telegram=telegram_cred,
+        )
 
-        agent_cfg = None
-        if provider_cred is not None:
-            agent_cfg = AgentConfig(
-                provider=provider_cred,
-                persona_id=persona,
-                soul=template.soul if template else None,
-                telegram=telegram_cred,
-            )
-
-        issuer = SigningKey.load(s.issuer_key_file)
+    def add_shadow(
+        self,
+        name: str,
+        persona: str | None = None,
+        provider: str | None = None,
+        telegram: str | None = None,
+    ) -> tuple[Shadow, list[str]]:
+        if name in self._map():
+            raise OrchestratorError(f"shadow {name} already exists")
+        agent_cfg = self._agent_config(persona, provider, telegram)
+        issuer = SigningKey.load(self.settings.issuer_key_file)
         port, mcp_port = free_ports(2)
         self._create_shadow(
             name, port, mcp_port, issuer, self._lab_trust(issuer), agent_cfg
@@ -411,12 +417,74 @@ class Orchestrator:
             lines.append(f"host LLM configured ({provider})")
         return shadow, lines
 
+    async def configure_shadow(
+        self,
+        name: str,
+        persona: str | None = None,
+        provider: str | None = None,
+        telegram: str | None = None,
+    ) -> None:
+        shadow = self.get(name)
+        agent_cfg = self._agent_config(persona, provider, telegram)
+        running = shadow.has_agent and shadow.agent.status() == "running"
+        if shadow.has_agent:
+            await shadow.agent.stop()
+        if agent_cfg is None:
+            (shadow.directory / AGENT_FILE).unlink(missing_ok=True)
+            if shadow.hermes_home.exists():
+                shutil.rmtree(shadow.hermes_home)
+        else:
+            save_agent(shadow.directory, agent_cfg)
+        shadow.reload()
+        if agent_cfg is not None:
+            shadow.agent.generate()
+            if running or self.running(name):
+                try:
+                    await shadow.agent.start()
+                except RuntimeError as exc:
+                    self.log(f"{name} host LLM failed: {exc}")
+        self.log(f"{name} reconfigured")
+
     async def remove_shadow(self, name: str) -> None:
         directory = self.get(name).directory
         await self.down(name)
         self._invalidate()
         shutil.rmtree(directory)
         self.log(f"{name} removed")
+
+    def providers(self) -> list[ProviderCred]:
+        return load_secrets(self.settings).providers
+
+    def telegrams(self) -> list[TelegramCred]:
+        return load_secrets(self.settings).telegram
+
+    def add_provider(
+        self, name: str, kind: ProviderKind, model: str, api_key: str
+    ) -> None:
+        secrets = load_secrets(self.settings)
+        secrets.providers = [p for p in secrets.providers if p.name != name]
+        secrets.providers.append(
+            ProviderCred(name=name, kind=kind, model=model, api_key=api_key)
+        )
+        save_secrets(self.settings, secrets)
+
+    def remove_provider(self, name: str) -> None:
+        secrets = load_secrets(self.settings)
+        secrets.providers = [p for p in secrets.providers if p.name != name]
+        save_secrets(self.settings, secrets)
+
+    def add_telegram(self, name: str, token: str, allowed_users: list[str]) -> None:
+        secrets = load_secrets(self.settings)
+        secrets.telegram = [t for t in secrets.telegram if t.name != name]
+        secrets.telegram.append(
+            TelegramCred(name=name, token=token, allowed_users=allowed_users)
+        )
+        save_secrets(self.settings, secrets)
+
+    def remove_telegram(self, name: str) -> None:
+        secrets = load_secrets(self.settings)
+        secrets.telegram = [t for t in secrets.telegram if t.name != name]
+        save_secrets(self.settings, secrets)
 
 
 def main() -> None:

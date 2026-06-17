@@ -87,6 +87,10 @@ class Shadow:
             self._agent_cfg = load_agent(self.directory)
         return self._agent_cfg
 
+    def reload(self) -> None:
+        self._sidecar = None
+        self._agent_cfg = None
+
     @property
     def name(self) -> str:
         return self.sidecar.name
