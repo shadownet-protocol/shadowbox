@@ -5,7 +5,8 @@ import yaml
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ProviderKind = Literal["anthropic", "openai", "openrouter"]
+ProviderKind = Literal["anthropic", "openai-api", "openrouter"]
+AgentKind = Literal["hermes"]
 
 SIDECAR_FILE = "sidecar.yaml"
 AGENT_FILE = "agent.yaml"
@@ -71,6 +72,7 @@ class SidecarConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
+    kind: AgentKind = "hermes"
     provider: ProviderCred
     persona_id: str | None = None
     soul: str | None = None

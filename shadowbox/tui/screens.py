@@ -259,14 +259,30 @@ class SettingsScreen(Screen):
         self.orchestrator.add_telegram(**result)
         self._reload()
 
-    def action_remove(self) -> None:
+    @work
+    async def action_remove(self) -> None:
         active = self.query_one(TabbedContent).active
         if active == "tab-providers":
             table = self.query_one("#providers", DataTable)
-            if self.provider_names and table.cursor_row < len(self.provider_names):
-                self.orchestrator.remove_provider(self.provider_names[table.cursor_row])
+            names, kind, remove = self.provider_names, "provider", (
+                self.orchestrator.remove_provider
+            )
         else:
             table = self.query_one("#telegram", DataTable)
-            if self.telegram_names and table.cursor_row < len(self.telegram_names):
-                self.orchestrator.remove_telegram(self.telegram_names[table.cursor_row])
+            names, kind, remove = self.telegram_names, "telegram bot", (
+                self.orchestrator.remove_telegram
+            )
+        if not names or table.cursor_row >= len(names):
+            return
+        name = names[table.cursor_row]
+        ok = await self.app.push_screen_wait(
+            ConfirmScreen(
+                f"remove {kind} {name}?",
+                ["shadows already using it keep their copy until reconfigured"],
+                "Remove",
+            )
+        )
+        if not ok:
+            return
+        remove(name)
         self._reload()

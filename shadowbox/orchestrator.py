@@ -13,7 +13,6 @@ from shadowbox.config import (
     SIDECAR_FILE,
     AgentConfig,
     Personas,
-    PersonaTemplate,
     ProviderCred,
     ProviderKind,
     Secrets,
@@ -34,29 +33,8 @@ from shadowbox.crypto import SigningKey
 from shadowbox.data.agentcard import AgentCard
 from shadowbox.data.credential import Credential
 from shadowbox.data.envelope import WireError
+from shadowbox.defaults import DEFAULT_SHADOWS, DEFAULT_TEMPLATES
 from shadowbox.shadow import Shadow
-
-DEFAULT_SHADOWS = ["alice", "bob"]
-
-DEFAULT_TEMPLATES = [
-    PersonaTemplate(
-        id="negotiator",
-        display="hard-nosed negotiator",
-        soul=(
-            "You negotiate firmly but fairly on your Subject's behalf. You never"
-            " accept a first offer, you always know your walk-away point, and you"
-            " keep your Subject's interests above rapport."
-        ),
-    ),
-    PersonaTemplate(
-        id="scheduler",
-        display="calendar wrangler",
-        soul=(
-            "You manage your Subject's time. You propose concrete slots, decline"
-            " politely when the calendar is full, and never double-book."
-        ),
-    ),
-]
 
 
 def free_ports(count: int) -> list[int]:

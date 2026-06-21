@@ -10,11 +10,11 @@ ConfirmScreen, AddContactScreen, NotesScreen, AddShadowScreen {
     align: center middle;
 }
 #dialog {
-    width: 90; height: auto; max-height: 80%;
+    width: 90; height: auto; max-height: 90%; overflow-y: auto;
     border: round $primary; padding: 1 2; background: $surface;
 }
 #dialog-title { text-style: bold; margin-bottom: 1; }
-#dialog Input, #dialog Select { margin: 1 0; }
+#dialog Input, #dialog Select { margin-bottom: 1; }
 #dialog-buttons { height: auto; align-horizontal: center; margin-top: 1; }
 #dialog-buttons Button { margin: 0 2; }
 """
@@ -135,8 +135,9 @@ class AddShadowScreen(ModalScreen[dict | None]):
         self._current = current or {}
         self._editing = current is not None
 
-    def _value(self, key: str):
-        return self._current.get(key) or Select.BLANK
+    def _preset(self, key: str) -> dict:
+        value = self._current.get(key)
+        return {"value": value} if value else {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
@@ -153,20 +154,20 @@ class AddShadowScreen(ModalScreen[dict | None]):
             yield Select(
                 [(p.display, p.id) for p in self._personas],
                 prompt="persona (optional)",
-                value=self._value("persona"),
                 id="persona",
+                **self._preset("persona"),
             )
             yield Select(
                 [(f"{p.name}  [{p.kind}: {p.model}]", p.name) for p in self._providers],
                 prompt="provider (optional)",
-                value=self._value("provider"),
                 id="provider",
+                **self._preset("provider"),
             )
             yield Select(
                 [(t.name, t.name) for t in self._telegrams],
                 prompt="telegram (optional)",
-                value=self._value("telegram"),
                 id="telegram",
+                **self._preset("telegram"),
             )
             with Horizontal(id="dialog-buttons"):
                 yield Button("OK", variant="success", id="confirm")
@@ -183,7 +184,7 @@ class AddShadowScreen(ModalScreen[dict | None]):
 
     def _select(self, select_id: str) -> str | None:
         value = self.query_one(f"#{select_id}", Select).value
-        return None if value is Select.BLANK else value
+        return value if isinstance(value, str) else None
 
     def _submit(self) -> None:
         name = self.query_one("#name", Input).value.strip()
@@ -210,7 +211,7 @@ class AddProviderScreen(ModalScreen[dict | None]):
             yield Label("add provider", id="dialog-title")
             yield Input(placeholder="name (e.g. or-main)", id="name")
             yield Select(
-                [(k, k) for k in ("anthropic", "openai", "openrouter")],
+                [(k, k) for k in ("anthropic", "openai-api", "openrouter")],
                 prompt="kind",
                 id="kind",
             )
@@ -224,11 +225,17 @@ class AddProviderScreen(ModalScreen[dict | None]):
         if event.button.id != "confirm":
             self.dismiss(None)
             return
+        self._submit()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
         name = self.query_one("#name", Input).value.strip()
         kind = self.query_one("#kind", Select).value
         model = self.query_one("#model", Input).value.strip()
         api_key = self.query_one("#api_key", Input).value.strip()
-        if name and kind is not Select.BLANK and model and api_key:
+        if name and isinstance(kind, str) and model and api_key:
             self.dismiss(
                 {"name": name, "kind": kind, "model": model, "api_key": api_key}
             )
@@ -254,6 +261,12 @@ class AddTelegramScreen(ModalScreen[dict | None]):
         if event.button.id != "confirm":
             self.dismiss(None)
             return
+        self._submit()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
         name = self.query_one("#name", Input).value.strip()
         token = self.query_one("#token", Input).value.strip()
         users = [

@@ -21,7 +21,7 @@ from shadowbox.data.credential import CredentialStore, SqliteCredentialStore
 from shadowbox.data.directives import DirectiveStore, SqliteDirectiveStore
 from shadowbox.data.events import EventStore, SqliteEventStore
 from shadowbox.data.messages import MessageStore, SqliteMessageStore
-from shadowbox.shadow.agent import Agent
+from shadowbox.shadow.agent import Agent, build_agent
 from shadowbox.shadow.gateway import Gateway
 from shadowbox.shadow.wire import Wire
 
@@ -90,6 +90,7 @@ class Shadow:
     def reload(self) -> None:
         self._sidecar = None
         self._agent_cfg = None
+        self._agent = None
 
     @property
     def name(self) -> str:
@@ -172,7 +173,7 @@ class Shadow:
     @property
     def agent(self) -> Agent:
         if self._agent is None:
-            self._agent = Agent(self)
+            self._agent = build_agent(self)
         return self._agent
 
     @property

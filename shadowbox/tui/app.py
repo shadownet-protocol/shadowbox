@@ -24,7 +24,10 @@ def agent_lamp(status: str | None) -> str:
 
 def row_markup(name: str, sub: dict, persona: str | None) -> str:
     lamps = f"G{lamp(sub['gateway'])} A{lamp(sub['a2a'])} L{agent_lamp(sub['agent'])}"
-    tail = f"  [dim]{persona}[/dim]" if persona else ""
+    if sub["agent"] is None:
+        tail = "  [dim italic]no host LLM[/]"
+    else:
+        tail = f"  [dim]{persona or 'host LLM'}[/]"
     return f"[b]{name:<10}[/b] {lamps}{tail}"
 
 
@@ -150,11 +153,25 @@ class ShadowboxApp(App):
             ]
         )
         gw = "mcp✓ sse✓" if sub["gateway"] else "down"
+        if sub["agent"] is None:
+            agent_line = (
+                "agent   [yellow]not set up[/]  [dim](press e to add a host LLM)[/]"
+            )
+        else:
+            cfg = shadow.agent_config
+            meta = [f"{cfg.kind}/{shadow.provider}"] if cfg else []
+            if shadow.persona:
+                meta.append(f"persona {shadow.persona}")
+            if cfg and cfg.telegram:
+                meta.append(f"telegram {cfg.telegram.name}")
+            else:
+                meta.append("[dim]no telegram[/]")
+            agent_line = f"agent   {sub['agent']}  [dim]{' · '.join(meta)}[/]"
         details.update(
             f"[b]{name}[/b]\n"
             f"gateway :{shadow.mcp_port}  {gw}\n"
             f"a2a     :{shadow.port}  {'up' if sub['a2a'] else 'down'}\n"
-            f"agent   {sub['agent'] or 'n/a'}\n"
+            f"{agent_line}\n"
             f"key     {shadow.public_key.multibase[:16]}…\n"
             f"{contacts} contacts · {reviews} review"
         )
