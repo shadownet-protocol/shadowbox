@@ -264,13 +264,17 @@ class SettingsScreen(Screen):
         active = self.query_one(TabbedContent).active
         if active == "tab-providers":
             table = self.query_one("#providers", DataTable)
-            names, kind, remove = self.provider_names, "provider", (
-                self.orchestrator.remove_provider
+            names, kind, remove = (
+                self.provider_names,
+                "provider",
+                (self.orchestrator.remove_provider),
             )
         else:
             table = self.query_one("#telegram", DataTable)
-            names, kind, remove = self.telegram_names, "telegram bot", (
-                self.orchestrator.remove_telegram
+            names, kind, remove = (
+                self.telegram_names,
+                "telegram bot",
+                (self.orchestrator.remove_telegram),
             )
         if not names or table.cursor_row >= len(names):
             return

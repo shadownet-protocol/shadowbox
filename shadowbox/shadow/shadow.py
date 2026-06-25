@@ -21,8 +21,15 @@ from shadowbox.data.credential import CredentialStore, SqliteCredentialStore
 from shadowbox.data.directives import DirectiveStore, SqliteDirectiveStore
 from shadowbox.data.events import EventStore, SqliteEventStore
 from shadowbox.data.messages import MessageStore, SqliteMessageStore
+from shadowbox.data.queues import (
+    EscalationStore,
+    SqliteEscalationStore,
+    SqliteTaskStore,
+    TaskStore,
+)
 from shadowbox.shadow.agent import Agent, build_agent
 from shadowbox.shadow.gateway import Gateway
+from shadowbox.shadow.office import Office
 from shadowbox.shadow.wire import Wire
 
 if TYPE_CHECKING:
@@ -49,8 +56,11 @@ class Shadow:
         self._messages: MessageStore | None = None
         self._credentials: CredentialStore | None = None
         self._events: EventStore | None = None
+        self._tasks: TaskStore | None = None
+        self._escalations: EscalationStore | None = None
         self._gateway: Gateway | None = None
         self._agent: Agent | None = None
+        self._office: Office | None = None
         self._wire: Wire | None = None
 
     @property
@@ -104,9 +114,8 @@ class Shadow:
     def mcp_port(self) -> int:
         return self.sidecar.mcp_port
 
-    @property
-    def token(self) -> str:
-        return self.sidecar.token
+    def token_for(self, role: str) -> str:
+        return self.sidecar.token_for(role)
 
     @property
     def trust(self) -> TrustConfig:
@@ -165,6 +174,18 @@ class Shadow:
         return self._events
 
     @property
+    def tasks(self) -> TaskStore:
+        if self._tasks is None:
+            self._tasks = SqliteTaskStore(self.db_file)
+        return self._tasks
+
+    @property
+    def escalations(self) -> EscalationStore:
+        if self._escalations is None:
+            self._escalations = SqliteEscalationStore(self.db_file)
+        return self._escalations
+
+    @property
     def gateway(self) -> Gateway:
         if self._gateway is None:
             self._gateway = Gateway(self)
@@ -177,12 +198,20 @@ class Shadow:
         return self._agent
 
     @property
+    def office(self) -> Office:
+        if self._office is None:
+            self._office = Office(self)
+        return self._office
+
+    @property
     def wire(self) -> Wire:
         if self._wire is None:
             self._wire = Wire(self)
         return self._wire
 
     def close(self) -> None:
+        if self._office is not None:
+            self._office.stop()
         if self._agent is not None:
             self._agent.kill()
         for component in (self._gateway, self._wire):
@@ -194,8 +223,11 @@ class Shadow:
             self._messages,
             self._credentials,
             self._events,
+            self._tasks,
+            self._escalations,
         ):
             if store is not None:
                 store.close()
         self._contacts = self._directives = self._messages = None
         self._credentials = self._events = None
+        self._tasks = self._escalations = None

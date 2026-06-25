@@ -8,7 +8,12 @@ from textual.widgets import Footer, Header, Label, ListItem, ListView, RichLog, 
 from shadowbox.config import load_personas, load_secrets
 from shadowbox.orchestrator import Orchestrator, OrchestratorError
 from shadowbox.tui.modals import CSS as MODAL_CSS
-from shadowbox.tui.modals import AddShadowScreen, ConfirmScreen
+from shadowbox.tui.modals import (
+    AddShadowScreen,
+    ConfirmScreen,
+    PlaygroundPickScreen,
+)
+from shadowbox.tui.playground import PlaygroundScreen
 from shadowbox.tui.screens import SettingsScreen, ShadowScreen
 
 
@@ -23,7 +28,10 @@ def agent_lamp(status: str | None) -> str:
 
 
 def row_markup(name: str, sub: dict, persona: str | None) -> str:
-    lamps = f"G{lamp(sub['gateway'])} A{lamp(sub['a2a'])} L{agent_lamp(sub['agent'])}"
+    lamps = (
+        f"G{lamp(sub['gateway'])} A{lamp(sub['a2a'])}"
+        f" O{lamp(sub['office'])} L{agent_lamp(sub['agent'])}"
+    )
     if sub["agent"] is None:
         tail = "  [dim italic]no host LLM[/]"
     else:
@@ -49,6 +57,7 @@ class ShadowboxApp(App):
         ("n", "new_shadow", "new"),
         ("e", "edit_shadow", "edit"),
         ("w", "wipe", "wipe"),
+        ("p", "playground", "playground"),
         ("c", "settings", "config"),
         ("r", "reinit", "reinit"),
         ("q", "quit", "quit"),
@@ -251,6 +260,17 @@ class ShadowboxApp(App):
 
     def action_settings(self) -> None:
         self.push_screen(SettingsScreen(self.orchestrator))
+
+    @work
+    async def action_playground(self) -> None:
+        names = [s.name for s in self.orchestrator.shadows]
+        if len(names) < 2:
+            self.notify("need at least two shadows", severity="warning")
+            return
+        pick = await self.push_screen_wait(PlaygroundPickScreen(names))
+        if pick is None:
+            return
+        self.push_screen(PlaygroundScreen(self.orchestrator, *pick))
 
     @work
     async def action_edit_shadow(self) -> None:
