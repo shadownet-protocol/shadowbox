@@ -279,6 +279,91 @@ class TaskUpdateEventData(Wire):
     status: str
 
 
+class Task(Wire):
+    id: str
+    context_id: str | None = None
+    to_peer: str
+    intent: str | None = None
+    instruction: str
+    status: str
+    created_at: str
+    result: str | None = None
+
+
+class Escalation(Wire):
+    id: str
+    context_id: str
+    question: str
+    options: list[str] = []
+    status: str
+    decision: str | None = None
+    created_at: str
+
+
+class DelegateInput(Wire):
+    to: str
+    instruction: str
+    intent: str | None = None
+    context_id: str | None = None
+
+
+class TasksResult(Wire):
+    tasks: list[Task]
+
+
+class ClaimTaskInput(Wire):
+    id: str
+
+
+class CompleteTaskInput(Wire):
+    id: str
+    result: str | None = None
+
+
+class EscalateInput(Wire):
+    context_id: str
+    question: str
+    options: list[str] = []
+
+
+class EscalationsResult(Wire):
+    escalations: list[Escalation]
+
+
+class ResolveEscalationInput(Wire):
+    id: str
+    decision: str
+
+
+class TaskCreatedEventData(Wire):
+    task_id: str
+    to: str
+    context_id: str | None = None
+
+
+class TaskCompletedEventData(Wire):
+    task_id: str
+
+
+class EscalationRaisedEventData(Wire):
+    escalation_id: str
+    context_id: str
+
+
+class EscalationResolvedEventData(Wire):
+    escalation_id: str
+    context_id: str
+    decision: str
+
+
+class ReviewPendingEventData(Wire):
+    from_: str = Field(alias="from")
+    context_id: str
+    message_id: str
+    text: str
+    addr: str | None = None
+
+
 NOTIFICATION_NAMESPACE = "notifications/shadownet/"
 
 EVENT_DATA_MODELS: dict[str, type[Wire]] = {
@@ -286,6 +371,11 @@ EVENT_DATA_MODELS: dict[str, type[Wire]] = {
     "outbox.status": OutboxStatusEventData,
     "directives.updated": DirectivesUpdatedEventData,
     "task.update": TaskUpdateEventData,
+    "task.created": TaskCreatedEventData,
+    "task.completed": TaskCompletedEventData,
+    "escalation.raised": EscalationRaisedEventData,
+    "escalation.resolved": EscalationResolvedEventData,
+    "review.pending": ReviewPendingEventData,
 }
 
 TOOLS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
@@ -304,6 +394,13 @@ TOOLS: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
     "inbox_wait": (InboxWaitInput, InboxWaitResult),
     "contexts": (ContextsInput, ContextsResult),
     "history": (HistoryInput, HistoryResult),
+    "delegate": (DelegateInput, Task),
+    "tasks": (Wire, TasksResult),
+    "claim_task": (ClaimTaskInput, Task),
+    "complete_task": (CompleteTaskInput, Ok),
+    "escalate": (EscalateInput, Escalation),
+    "escalations": (Wire, EscalationsResult),
+    "resolve_escalation": (ResolveEscalationInput, Escalation),
 }
 
 TOOL_ERRORS: dict[str, tuple[str, ...]] = {

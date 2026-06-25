@@ -156,7 +156,12 @@ class Orchestrator:
 
         shadow = self.get(name)
         agent = shadow.agent.status() if shadow.has_agent else None
-        return {"gateway": live("gateway"), "a2a": live("a2a"), "agent": agent}
+        return {
+            "gateway": live("gateway"),
+            "a2a": live("a2a"),
+            "office": live("office"),
+            "agent": agent,
+        }
 
     async def _guard(self, coro, name: str, which: str) -> None:
         try:
@@ -186,6 +191,11 @@ class Orchestrator:
     async def up(self, name: str) -> None:
         self.start(name)
         shadow = self.get(name)
+        loop = asyncio.get_running_loop()
+        self._tasks[name]["office"] = loop.create_task(
+            self._guard(shadow.office.run(), name, "office")
+        )
+        self.log(f"{name} office up")
         if shadow.has_agent:
             try:
                 await shadow.agent.start()
@@ -287,7 +297,7 @@ class Orchestrator:
                 name=name,
                 port=port,
                 mcp_port=mcp_port,
-                token=token_urlsafe(16),
+                tokens={"agent": token_urlsafe(16), "office": token_urlsafe(16)},
                 trust=trust,
             ),
         )

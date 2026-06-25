@@ -153,6 +153,8 @@ class Wire:
             if envelope.body.get("intent"):
                 data["intent"] = envelope.body["intent"]
             self.shadow.events.emit("inbox.message", data)
+            if route == "stranger_review":
+                self._emit_review(envelope)
         except WireError as exc:
             return self._problem(exc)
         return JSONResponse(
@@ -160,6 +162,18 @@ class Wire:
             media_type="application/a2a+json",
             headers={"A2A-Extensions": URN},
         )
+
+    def _emit_review(self, envelope) -> None:
+        address = self.shadow.orchestrator.address_for_pk(envelope.sender)
+        data = {
+            "from": envelope.sender,
+            "contextId": envelope.context_id,
+            "messageId": envelope.message_id,
+            "text": envelope.body.get("text") or "",
+        }
+        if address is not None:
+            data["addr"] = address.uri
+        self.shadow.events.emit("review.pending", data)
 
     def _classify(self, envelope) -> str:
         detail = self.shadow.contacts.try_detail(envelope.sender)

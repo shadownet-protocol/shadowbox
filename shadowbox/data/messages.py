@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS replay (
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 class MessageStore(ABC):
@@ -62,7 +62,7 @@ class MessageStore(ABC):
     ) -> bool: ...
 
     @abstractmethod
-    def graduate(self, peer: str) -> int: ...
+    def graduate(self, peer: str) -> list[tuple[str, str, str | None]]: ...
 
     @abstractmethod
     def seen(self, sender: str, message_id: str) -> bool: ...
@@ -167,14 +167,19 @@ class SqliteMessageStore(MessageStore):
         ).fetchone()
         return row is not None
 
-    def graduate(self, peer: str) -> int:
-        cur = self.db.execute(
+    def graduate(self, peer: str) -> list[tuple[str, str, str | None]]:
+        rows = self.db.execute(
+            "SELECT message_id, context_id, intent FROM messages"
+            " WHERE direction = 'inbound' AND peer = ? AND status = 'stranger_review'",
+            (peer,),
+        ).fetchall()
+        self.db.execute(
             "UPDATE messages SET status = 'inbox' WHERE direction = 'inbound'"
             " AND peer = ? AND status = 'stranger_review'",
             (peer,),
         )
         self.db.commit()
-        return cur.rowcount
+        return [(r["message_id"], r["context_id"], r["intent"]) for r in rows]
 
     def seen(self, sender: str, message_id: str) -> bool:
         row = self.db.execute(

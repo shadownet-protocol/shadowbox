@@ -63,12 +63,18 @@ class TrustConfig(BaseModel):
     from_stranger: list[str] = ["org_affiliation"]
 
 
+Role = Literal["agent", "office"]
+
+
 class SidecarConfig(BaseModel):
     name: str
     port: int
     mcp_port: int
-    token: str
+    tokens: dict[str, str]
     trust: TrustConfig = TrustConfig()
+
+    def token_for(self, role: Role) -> str:
+        return self.tokens[role]
 
 
 class AgentConfig(BaseModel):

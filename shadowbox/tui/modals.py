@@ -279,3 +279,32 @@ class AddTelegramScreen(ModalScreen[dict | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class PlaygroundPickScreen(ModalScreen[tuple[str, str] | None]):
+    BINDINGS = [("escape", "cancel", "cancel")]
+
+    def __init__(self, names: list[str]):
+        super().__init__()
+        self._names = names
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label("playground — pick two shadows", id="dialog-title")
+            yield Select([(n, n) for n in self._names], prompt="left shadow", id="a")
+            yield Select([(n, n) for n in self._names], prompt="right shadow", id="b")
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Open", variant="success", id="confirm")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id != "confirm":
+            self.dismiss(None)
+            return
+        a = self.query_one("#a", Select).value
+        b = self.query_one("#b", Select).value
+        if isinstance(a, str) and isinstance(b, str) and a != b:
+            self.dismiss((a, b))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

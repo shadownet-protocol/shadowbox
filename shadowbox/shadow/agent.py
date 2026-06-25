@@ -118,9 +118,11 @@ class Agent(ABC):
 class HermesAgent(Agent):
     """Nous Research hermes-agent, supervised in an isolated HOME."""
 
+    role = "agent"
+
     @property
     def home(self) -> Path:
-        return self.shadow.hermes_home
+        return self.shadow.hermes_home / self.role
 
     @property
     def dot(self) -> Path:
@@ -146,8 +148,10 @@ class HermesAgent(Agent):
             "model": {"default": cfg.provider.model, "provider": cfg.provider.kind},
             "mcp_servers": {
                 "shadownet": {
-                    "url": f"http://127.0.0.1:{self.shadow.mcp_port}/mcp",
-                    "headers": {"Authorization": f"Bearer {self.shadow.token}"},
+                    "url": f"http://127.0.0.1:{self.shadow.mcp_port}/mcp/agent",
+                    "headers": {
+                        "Authorization": f"Bearer {self.shadow.token_for('agent')}"
+                    },
                 }
             },
         }
@@ -177,10 +181,11 @@ class HermesAgent(Agent):
         return [f"wrote {self.dot}", f"launch: {self.launch_command()}"]
 
     def _install_skills(self) -> None:
-        if not SKILLS_SRC.is_dir():
+        src = SKILLS_SRC / self.role
+        if not src.is_dir():
             return
         dest = self.dot / "skills"
-        for skill in SKILLS_SRC.iterdir():
+        for skill in src.iterdir():
             if skill.is_dir() and (skill / "SKILL.md").exists():
                 shutil.copytree(skill, dest / skill.name, dirs_exist_ok=True)
 
