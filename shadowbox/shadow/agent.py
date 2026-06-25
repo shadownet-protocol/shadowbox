@@ -9,8 +9,12 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from shadowbox.defaults import SHADOW_SOUL
+
 if TYPE_CHECKING:
     from shadowbox.shadow.shadow import Shadow
+
+SKILLS_SRC = Path(__file__).resolve().parent.parent / "skills"
 
 ENV_KEYS = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -165,9 +169,20 @@ class HermesAgent(Agent):
         env_file = self.dot / ".env"
         env_file.write_text("\n".join(env) + "\n")
         env_file.chmod(0o600)
+        soul = SHADOW_SOUL.format(name=self.shadow.name)
         if cfg.soul:
-            (self.dot / "SOUL.md").write_text(cfg.soul)
+            soul += f"\n\n# Persona\n\n{cfg.soul}\n"
+        (self.dot / "SOUL.md").write_text(soul)
+        self._install_skills()
         return [f"wrote {self.dot}", f"launch: {self.launch_command()}"]
+
+    def _install_skills(self) -> None:
+        if not SKILLS_SRC.is_dir():
+            return
+        dest = self.dot / "skills"
+        for skill in SKILLS_SRC.iterdir():
+            if skill.is_dir() and (skill / "SKILL.md").exists():
+                shutil.copytree(skill, dest / skill.name, dirs_exist_ok=True)
 
 
 AGENTS = {"hermes": HermesAgent}
